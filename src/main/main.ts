@@ -13,6 +13,7 @@ import { home } from "../brain/paths";
 import { sameFolder } from "../brain/sessions";
 import { bundleReady } from "../brain/sorting";
 import * as ws from "../brain/workspace";
+import { FreeModels } from "./free";
 
 const BRAIN_REFRESH_MS = 10_000;
 const NETWORK_CHECK_MS = 30_000;
@@ -31,6 +32,7 @@ let lastGraph = "";
 let isOnline = true;
 let failedChecks = 0;
 let sorter: ChildProcess | null = null;
+const free = new FreeModels(() => send("free:status", free.proxy.status()));
 let sortingStatus: Record<string, unknown> = { status: "off" };
 
 /** The MCP config every Claude Code session is started with, so all of them share the brain. */
@@ -70,7 +72,8 @@ function startTerminal(id: string, options: { folder?: string; resume?: string }
   const folder = wanted && fs.existsSync(wanted) ? wanted : os.homedir();
   const { cols, rows } = sizes.get(id) ?? { cols: 80, rows: 24 };
   const shell = shellCommand();
-  const term = pty.spawn(shell.file, shell.args, { name: "xterm-256color", cols, rows, cwd: folder, env: profileEnv(profile, process.env) });
+  const env = profileEnv(profile, process.env, free.connection());
+  const term = pty.spawn(shell.file, shell.args, { name: "xterm-256color", cols, rows, cwd: folder, env });
   terminals.set(id, term);
   term.onData((data) => send("term:data", id, data));
   term.onExit(() => {
@@ -280,6 +283,16 @@ ipcMain.handle("profile:remove", (_event, id: string) =>
   }),
 );
 ipcMain.handle("brain:search", (_event, query: string) => brain.search(String(query), 20));
+ipcMain.handle("free:get", () => ({ ...free.describe(), enabled: workspace.profiles.some((p) => p.kind === "free") }));
+ipcMain.handle("free:save", (_event, entries: { id: string; key?: string; model?: string }[]) =>
+  result(() => {
+    free.save(Array.isArray(entries) ? entries : []);
+    if (!free.hasAnyKey()) throw new Error("Enter at least one API key.");
+    ws.enableFreeProfile(workspace);
+    return workspace;
+  }),
+);
+ipcMain.handle("free:test", () => free.test());
 ipcMain.handle("sorting:get", () => sortingStatus);
 ipcMain.handle("sorting:toggle", () => toggleSorting());
 ipcMain.handle("session:resume", (_event, ref: { profile: string; id: string; folder: string }) => {
@@ -300,7 +313,8 @@ ipcMain.on("term:resize", (_event, id: string, cols: number, rows: number) => {
   terminals.get(String(id))?.resize(Math.floor(cols), Math.floor(rows));
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await free.start();
   createWindow();
   setInterval(pushGraph, BRAIN_REFRESH_MS);
   checkNetwork();

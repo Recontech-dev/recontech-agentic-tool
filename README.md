@@ -17,6 +17,7 @@ Agentic Lazy Tool puts your Claude Code terminals side by side in one window and
 - **Resume anything:** click a past session and press **Resume** to continue it in the right terminal and folder.
 - **Search everything:** find any earlier decision or session across all projects.
 - **Smart sorting (optional):** a local model labels every session as bug fix, feature, refactor, setup and deploy, tests, docs or question, and spots work that was left unfinished. Claude is told about unfinished work first, and the graph can show only unfinished sessions or one kind of work.
+- **Free models when you hit a limit:** a special terminal runs Claude Code on free AI providers (Gemini, OpenRouter, Cerebras, Groq) with your own free keys and the same brain. When a Claude profile reaches its usage limit, a bar offers to open it.
 - **Works offline:** an Ollama profile runs Claude Code on a model on your own computer, with the same brain, when there is no internet.
 - **Private by design:** everything stays on your computer, secrets are masked before anything is stored, and the app never sees your Claude sign-in.
 
@@ -51,6 +52,23 @@ Each terminal's title bar shows the email its Claude Code is signed in with, and
 Claude Code signs in through your web browser, and the browser approves whichever claude.ai account it is already signed in to. To sign a profile in to a different account, type `/logout` and then `/login` in its terminal, copy the sign-in link into a private browser window, and sign in there with the account you want.
 
 Each profile is a separate Claude Code sign-in. Use your own accounts, for example a personal and a work account. Sharing or borrowing someone else's Claude account breaks Anthropic's terms and puts that account at risk. The app does not switch accounts for you when a usage limit is reached.
+
+## Free models terminal
+
+For when a Claude profile reaches its usage limit and you want to keep going.
+
+1. Click **Free models** at the top and paste a free API key for at least one provider. Each row says where to get the key. Google Gemini has the most generous free tier and is the best first choice.
+2. Click **Test keys** to check each key and model name, then **Save and enable**. A **Free models** terminal appears. It does not start by itself.
+3. When a Claude terminal prints that its limit was reached, a bar appears at the top: click **Open the Free terminal**. You can also start it any time with its **Start the free terminal** button.
+4. Work as usual. It is the real Claude Code with the same brain, so it knows the project's notes and past sessions; only the model answering is different.
+
+How it works and what to expect:
+
+- Claude Code in that terminal talks to a small bridge inside the app, which translates each request for the free provider. Providers are tried from top to bottom, and the next one takes over when one is rate limited, out of quota or failing.
+- Free models are weaker and slower than Claude, and their free tiers are limited. Claude Code sends long instructions with every request, which some free tiers (Groq's in particular) cannot fit.
+- Model names and free tiers change often. If **Test keys** reports a model problem, type a current model name from the provider's site into the model box.
+- Your keys are encrypted with your operating system's own protection and stored only on your computer. They are sent only to their own provider.
+- Your messages and code in that terminal go to the free provider that answers, under that provider's terms, not to Anthropic.
 
 ## Offline with Ollama
 

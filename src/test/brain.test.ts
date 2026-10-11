@@ -171,7 +171,9 @@ test("an Ollama profile runs Claude Code on the local model, offline", () => {
   const workspace = ws.load();
   assert.throws(() => ws.addProfile(workspace, { name: "Offline", kind: "ollama" }), /Ollama model/);
   const offline = ws.addProfile(workspace, { name: "Offline", kind: "ollama", model: "qwen3:8b" });
-  const env = profileEnv(offline, { PATH: "x", ELECTRON_RUN_AS_NODE: "1", ANTHROPIC_API_KEY: "real" });
+  const env = profileEnv(offline, { PATH: "x", ELECTRON_RUN_AS_NODE: "1", ANTHROPIC_API_KEY: "real", CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDECODE: "1" });
+  assert.equal(env.CLAUDE_CODE_ENTRYPOINT, undefined, "settings of an outer Claude Code session are not inherited");
+  assert.equal(env.CLAUDECODE, undefined);
   assert.equal(env.ANTHROPIC_BASE_URL, "http://localhost:11434");
   assert.equal(env.ANTHROPIC_API_KEY, "");
   assert.equal(env.CLAUDE_CONFIG_DIR, offline.configDir);
@@ -269,7 +271,26 @@ test("a profile reports the email it is signed in with, and nothing else", () =>
   assert.equal(signedInAs(work), "");
   fs.writeFileSync(path.join(work.configDir!, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "work@example.com", accessToken: "never-read" } }));
   fs.writeFileSync(path.join(root, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "me@example.com" } }));
+  if (process.platform !== "darwin") assert.equal(signedInAs(work), "", "an email without a saved login does not count");
+  fs.writeFileSync(path.join(work.configDir!, ".credentials.json"), "{}");
+  fs.mkdirSync(path.join(root, "claude-default"), { recursive: true });
+  fs.writeFileSync(path.join(root, "claude-default", ".credentials.json"), "{}");
   assert.equal(signedInAs(work), "work@example.com");
   assert.equal(signedInAs(workspace.profiles[0]), "me@example.com");
   assert.equal(signedInAs(ws.addProfile(workspace, { name: "Offline", kind: "ollama", model: "m" })), "");
+});
+
+test("the Free models terminal is one special profile that talks to the bridge", () => {
+  const workspace = ws.load();
+  ws.enableFreeProfile(workspace);
+  ws.enableFreeProfile(workspace);
+  const free = workspace.profiles.filter((p) => p.kind === "free");
+  assert.equal(free.length, 1);
+  const env = profileEnv(free[0], { ANTHROPIC_API_KEY: "real" }, { url: "http://127.0.0.1:5555", token: "secret-token" });
+  assert.equal(env.ANTHROPIC_BASE_URL, "http://127.0.0.1:5555");
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, "secret-token");
+  assert.equal(env.ANTHROPIC_API_KEY, "");
+  assert.equal(env.CLAUDE_CONFIG_DIR, free[0].configDir);
+  assert.match(claudeCommand(free[0], "c.json"), /^claude --model free-models --mcp-config 'c.json'$/);
+  assert.equal(signedInAs(free[0]), "");
 });

@@ -63,6 +63,22 @@
   #dialog form { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; width:min(440px, calc(100% - 32px)); display:flex; flex-direction:column; gap:10px; }
   #dialog .row { display:flex; gap:8px; justify-content:flex-end; }
   #error { color:#ff7b7b; min-height:1em; }
+  #limit { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#3a2f1a; border-bottom:1px solid var(--line); }
+  #limit[hidden] { display:none; }
+  .term { position:relative; }
+  .cover { position:absolute; inset:0; z-index:5; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center;
+           gap:12px; text-align:center; padding:20px; color:var(--dim); }
+  .cover b { color:var(--text); font-size:15px; }
+  .cover button { border-color:var(--accent); padding:8px 16px; }
+  #freeDialog { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:20; }
+  #freeDialog[hidden] { display:none; }
+  #freeDialog form { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; width:min(720px, calc(100% - 32px));
+                     max-height:calc(100% - 32px); overflow:auto; display:flex; flex-direction:column; gap:10px; }
+  .provider { border:1px solid var(--line); border-radius:6px; padding:10px; display:grid; grid-template-columns:1fr 1fr; gap:6px 10px; }
+  .provider .head { grid-column:1 / -1; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+  .provider input { width:100%; }
+  .provider .outcome { grid-column:1 / -1; font-size:12px; min-height:1em; overflow-wrap:anywhere; }
+  .good { color:var(--open); } .bad { color:#ff7b7b; }
   #found { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#1f2a3a; border-bottom:1px solid var(--line); }
   #found[hidden] { display:none; }
   #needFolder { grid-column:1 / -1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
@@ -83,10 +99,17 @@
   <button id="folder" title="Folder every terminal starts in">Choose project folder</button>
   <span id="net" hidden title="Claude cannot be reached. Profiles that run on Ollama keep working.">Offline</span>
   <span class="spacer"></span>
+  <button id="free" title="A special terminal that runs Claude Code on free AI providers, for when a Claude limit is hit">Free models</button>
   <button id="add">+ Profile</button>
   <button id="layout">Tabs</button>
   <button id="toggle">Hide brain</button>
 </header>
+<div id="limit" hidden>
+  <span id="limitText"></span>
+  <span class="spacer"></span>
+  <button id="limitGo">Open the Free terminal</button>
+  <button id="limitClose">Dismiss</button>
+</div>
 <div id="found" hidden>
   <span id="foundText"></span>
   <span class="spacer"></span>
@@ -133,6 +156,19 @@
     </div>
     <div id="error"></div>
     <div class="row"><button type="button" id="cancel">Cancel</button><button type="submit">Add</button></div>
+  </form>
+</div>
+<div id="freeDialog" hidden>
+  <form id="freeForm">
+    <strong>Free models terminal</strong>
+    <div class="dim">A special terminal that runs Claude Code on free AI providers, sharing the same brain. Use it when a Claude profile reaches its usage limit. Add a free API key for at least one provider; they are tried from top to bottom, and the next one takes over when one is limited. Keys are encrypted and stored only on this computer. Free models are weaker and slower than Claude.</div>
+    <div id="providers"></div>
+    <div id="freeError" class="bad"></div>
+    <div class="row" style="display:flex; gap:8px; justify-content:flex-end">
+      <button type="button" id="freeTest">Test keys</button>
+      <button type="button" id="freeCancel">Close</button>
+      <button type="submit">Save and enable</button>
+    </div>
   </form>
 </div>
 <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>

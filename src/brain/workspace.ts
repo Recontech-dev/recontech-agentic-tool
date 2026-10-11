@@ -15,8 +15,11 @@ export interface Profile {
   color: string;
   /** Claude Code's config folder for this profile; null means Claude Code's normal one (~/.claude). */
   configDir: string | null;
-  /** "claude" signs in to Claude as usual; "ollama" runs Claude Code on a local Ollama model, offline. */
-  kind?: "claude" | "ollama";
+  /**
+   * "claude" signs in to Claude as usual; "ollama" runs Claude Code on a local Ollama model, offline;
+   * "free" runs it on the user's free AI providers and is started by hand, for when a limit is hit.
+   */
+  kind?: "claude" | "ollama" | "free";
   /** The Ollama model, for an "ollama" profile. */
   model?: string;
 }
@@ -134,6 +137,18 @@ export function addProfile(workspace: Workspace, request: NewProfile | string): 
   workspace.profiles.push(profile);
   save(workspace);
   return profile;
+}
+
+export const FREE_PROFILE_ID = "free-models";
+
+/** Add the special Free models terminal if it is not there yet. */
+export function enableFreeProfile(workspace: Workspace): void {
+  if (workspace.profiles.some((p) => p.kind === "free")) return;
+  if (workspace.profiles.length >= MAX_PROFILES) throw new Error(`Remove a profile first: there can be at most ${MAX_PROFILES}.`);
+  const configDir = path.join(profilesDir(), FREE_PROFILE_ID);
+  fs.mkdirSync(configDir, { recursive: true });
+  workspace.profiles.push({ id: FREE_PROFILE_ID, name: "Free models", color: "#56b6c2", configDir, kind: "free" });
+  save(workspace);
 }
 
 export function removeProfile(workspace: Workspace, id: string): void {

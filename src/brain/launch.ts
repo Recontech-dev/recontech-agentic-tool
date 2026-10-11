@@ -9,10 +9,14 @@ import { Profile } from "./workspace";
 
 export const OLLAMA_URL = (process.env.OLLAMA_HOST || "http://localhost:11434").replace(/\/$/, "");
 
-/** Environment for a profile's terminal. */
-export function profileEnv(profile: Profile, base: NodeJS.ProcessEnv): Record<string, string> {
+/** Environment for a profile's terminal. `bridge` is the free-models bridge, needed for a "free" profile. */
+export function profileEnv(profile: Profile, base: NodeJS.ProcessEnv, bridge?: { url: string; token: string }): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(base)) if (value !== undefined) env[key] = value;
+  for (const [key, value] of Object.entries(base)) {
+    // Settings left behind by a Claude Code session the app itself was started from would change
+    // how the new sessions behave (for example, turn transcript saving off), so they are not passed on.
+    if (value !== undefined && !/^CLAUDE_?CODE/i.test(key)) env[key] = value;
+  }
   delete env.ELECTRON_RUN_AS_NODE;
   if (profile.configDir) env.CLAUDE_CONFIG_DIR = profile.configDir;
   else delete env.CLAUDE_CONFIG_DIR;
@@ -22,6 +26,14 @@ export function profileEnv(profile: Profile, base: NodeJS.ProcessEnv): Record<st
     env.ANTHROPIC_AUTH_TOKEN = "ollama";
     env.ANTHROPIC_API_KEY = "";
   }
+  if (profile.kind === "free" && bridge) {
+    // Claude Code talks to the bridge inside this app, which passes each request to a free provider.
+    env.ANTHROPIC_BASE_URL = bridge.url;
+    env.ANTHROPIC_AUTH_TOKEN = bridge.token;
+    env.ANTHROPIC_API_KEY = "";
+    // The bridge has no telemetry or update endpoints, so Claude Code is told not to call them.
+    env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+  }
   return env;
 }
 
@@ -30,6 +42,8 @@ export function claudeCommand(profile: Profile, mcpConfig: string, resume?: stri
   const quote = process.platform === "win32" ? (s: string) => `'${s.replace(/'/g, "''")}'` : (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const parts = ["claude"];
   if (profile.kind === "ollama" && profile.model) parts.push("--model", quote(profile.model));
+  // The bridge picks the real model; this name only labels the session.
+  if (profile.kind === "free") parts.push("--model", "free-models");
   if (resume && /^[\w-]+$/.test(resume)) parts.push("--resume", resume);
   parts.push("--mcp-config", quote(mcpConfig));
   return parts.join(" ");
@@ -45,8 +59,12 @@ export function configDirOf(profile: Profile): string {
  * sign-in, <config folder>/.claude.json for the others. Only the email is read.
  */
 export function signedInAs(profile: Profile): string {
-  if (profile.kind === "ollama") return "";
+  if (profile.kind === "ollama" || profile.kind === "free") return "";
   const file = profile.configDir ? path.join(profile.configDir, ".claude.json") : path.join(path.dirname(defaultClaudeDir()), ".claude.json");
+  // The settings file can name an account without a login being saved (for example after an
+  // interrupted sign-in). On Windows and Linux the saved login is a file, so its absence means
+  // "not signed in"; macOS keeps it in the Keychain, where it cannot be checked this way.
+  if (process.platform !== "darwin" && !fs.existsSync(path.join(configDirOf(profile), ".credentials.json"))) return "";
   try {
     const email = JSON.parse(fs.readFileSync(file, "utf8")).oauthAccount?.emailAddress;
     return typeof email === "string" ? email : "";

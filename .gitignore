@@ -11,3 +11,6 @@ release/
 .agentic-lazy-tool/
 .claude/
 CLAUDE.md
+
+# The Smart sorting model, if the user stores it inside this folder
+agentic-lazy-tool-model/

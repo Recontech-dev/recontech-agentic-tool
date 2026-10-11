@@ -1,7 +1,7 @@
 // The window: one terminal per profile, and the brain graph on the right.
 // This file runs in the page, so it uses only browser APIs and window.api from the preload script.
 
-interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama"; model?: string }
+interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama" | "free"; model?: string }
 interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs" }
 interface GraphNode { id: string; kind: string; label: string; text: string; detail: string; open: boolean;
   color?: string; resume?: { profile: string; id: string; folder: string }; tag?: string; unfinished?: boolean;
@@ -27,6 +27,10 @@ const started = new Set<string>();
 
 /* ---------- Terminals ---------- */
 
+// Layout work is done shortly after a change, with a timer. Screen frames are not used for this,
+// because they stop while the window is hidden or covered and a terminal would then never start.
+const soon = (work: () => void) => setTimeout(work, 30);
+
 function makePanel(profile: Profile): void {
   const panel = document.createElement("div");
   panel.className = "panel";
@@ -41,7 +45,7 @@ function makePanel(profile: Profile): void {
   name.textContent = profile.name;
   const hint = document.createElement("span");
   hint.className = "hint";
-  hint.textContent = profile.kind === "ollama" ? `offline · ${profile.model}` : profile.configDir ? "own sign-in" : "your normal Claude Code sign-in";
+  hint.textContent = profile.kind === "ollama" ? `offline · ${profile.model}` : profile.kind === "free" ? "free AI providers" : profile.configDir ? "own sign-in" : "your normal Claude Code sign-in";
   const spacer = document.createElement("span");
   spacer.className = "spacer";
   const restart = document.createElement("button");
@@ -75,11 +79,35 @@ function makePanel(profile: Profile): void {
   term.onResize(({ cols, rows }: { cols: number; rows: number }) => api.send("term:resize", profile.id, cols, rows));
   panel.addEventListener("mousedown", () => select(profile.id));
   terms.set(profile.id, { term, fit, panel });
+  if (profile.kind === "free") {
+    // The free terminal waits until the user asks for it, typically after a Claude limit is hit.
+    const cover = document.createElement("div");
+    cover.className = "cover";
+    const title = document.createElement("b");
+    title.textContent = "Free models terminal";
+    const text = document.createElement("div");
+    text.textContent = "Claude Code on your free AI providers, with the same brain. Start it when a Claude profile reaches its limit.";
+    const go = document.createElement("button");
+    go.textContent = "Start the free terminal";
+    go.onclick = () => startFree();
+    cover.append(title, text, go);
+    body.append(cover);
+  }
+}
+
+/** Start the free terminal (once) and bring it to the front. */
+function startFree(): void {
+  const profile = workspace.profiles.find((p) => p.kind === "free");
+  if (!profile) return void openFreeDialog();
+  terms.get(profile.id)?.panel.querySelector(".cover")?.remove();
+  select(profile.id);
+  if (!started.has(profile.id)) setTimeout(() => start(profile.id), 30);
 }
 
 function start(id: string): void {
   const entry = terms.get(id);
   if (!entry) return;
+  entry.panel.querySelector(".cover")?.remove();
   started.add(id);
   entry.term.reset();
   fitAll();
@@ -94,7 +122,7 @@ function select(id: string): void {
   active = id;
   for (const [key, { panel }] of terms) panel.classList.toggle("active", key === id);
   for (const tab of $("tabs").children) (tab as HTMLElement).classList.toggle("active", (tab as HTMLElement).dataset.id === id);
-  requestAnimationFrame(() => {
+  soon(() => {
     fitAll();
     terms.get(id)?.term.focus();
   });
@@ -151,8 +179,8 @@ function render(): void {
     return;
   }
   select(workspace.profiles.some((p) => p.id === active) ? active : workspace.profiles[0].id);
-  requestAnimationFrame(() => {
-    for (const profile of workspace.profiles) if (!started.has(profile.id)) start(profile.id);
+  soon(() => {
+    for (const profile of workspace.profiles) if (!started.has(profile.id) && profile.kind !== "free") start(profile.id);
     fitAll();
   });
   showNetwork();
@@ -180,13 +208,122 @@ $("foundDismiss").onclick = async () => {
   offerFoundFolders();
 };
 
-api.on("term:data", (id: string, data: string) => terms.get(id)?.term.write(data));
+api.on("term:data", (id: string, data: string) => {
+  terms.get(id)?.term.write(data);
+  watchForLimit(id, data);
+});
+
+/* ---------- Limit reached: offer the free terminal ---------- */
+
+const LIMIT_TEXT = /(usage limit reached|limit reached\s*[∙·|-]\s*resets|you'?ve (hit|reached) your (usage )?limit|out of extra usage)/i;
+const recentText = new Map<string, string>();
+const limitShownAt = new Map<string, number>();
+
+function watchForLimit(id: string, data: string): void {
+  const profile = workspace?.profiles.find((p) => p.id === id);
+  if (!profile || (profile.kind ?? "claude") !== "claude") return;
+  // Keep a short tail of plain text per terminal, so a message split across chunks is still seen.
+  const plain = data.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g, "");
+  const tail = ((recentText.get(id) ?? "") + plain).slice(-400);
+  recentText.set(id, tail);
+  if (!LIMIT_TEXT.test(tail)) return;
+  recentText.set(id, "");
+  if (Date.now() - (limitShownAt.get(id) ?? 0) < 10 * 60 * 1000) return;
+  limitShownAt.set(id, Date.now());
+  const hasFree = workspace.profiles.some((p) => p.kind === "free");
+  $("limitText").textContent = `${profile.name} has reached its Claude usage limit. ${hasFree ? "You can keep working in the Free models terminal." : "You can keep working on free AI providers: set up the Free models terminal."}`;
+  $("limitGo").textContent = hasFree ? "Open the Free terminal" : "Set up free models";
+  $("limit").hidden = false;
+}
+$("limitGo").onclick = () => {
+  $("limit").hidden = true;
+  startFree();
+};
+$("limitClose").onclick = () => ($("limit").hidden = true);
+
+/* ---------- Free models settings ---------- */
+
+interface FreeInfo {
+  enabled: boolean; canEncrypt: boolean;
+  providers: { id: string; name: string; model: string; hasKey: boolean; keyUrl: string; note: string }[];
+  status: { providers: { id: string; name: string; state: string; served: number; lastProblem: string }[] };
+}
+
+async function openFreeDialog(): Promise<void> {
+  const info: FreeInfo = await api.invoke("free:get");
+  const list = $("providers");
+  list.textContent = "";
+  $("freeError").textContent = info.canEncrypt ? "" : "This computer cannot encrypt saved keys, so keys cannot be stored.";
+  for (const provider of info.providers) {
+    const box = document.createElement("div");
+    box.className = "provider";
+    box.dataset.id = provider.id;
+    const head = document.createElement("div");
+    head.className = "head";
+    const name = document.createElement("b");
+    name.textContent = provider.name;
+    const note = document.createElement("span");
+    note.className = "dim";
+    note.textContent = `${provider.note} Get a key: ${provider.keyUrl}`;
+    head.append(name, note);
+    const key = document.createElement("input");
+    key.type = "password";
+    key.className = "key";
+    key.placeholder = provider.hasKey ? "Key saved. Type a new one to replace it." : "Paste the API key";
+    const model = document.createElement("input");
+    model.className = "model";
+    model.value = provider.model;
+    model.title = "Model name at this provider";
+    const result = document.createElement("div");
+    result.className = "outcome dim";
+    const state = info.status.providers.find((p) => p.id === provider.id);
+    result.textContent = provider.hasKey && state ? `${state.state}${state.served ? `, ${state.served} requests served` : ""}${state.lastProblem ? `. Last problem: ${state.lastProblem}` : ""}` : "";
+    box.append(head, key, model, result);
+    list.append(box);
+  }
+  $("freeDialog").hidden = false;
+}
+
+function freeEntries(): { id: string; key?: string; model: string }[] {
+  return [...document.querySelectorAll<HTMLElement>("#providers .provider")].map((box) => {
+    const key = (box.querySelector(".key") as HTMLInputElement).value;
+    return { id: box.dataset.id!, model: (box.querySelector(".model") as HTMLInputElement).value, ...(key ? { key } : {}) };
+  });
+}
+
+$("free").onclick = () => openFreeDialog();
+$("freeCancel").onclick = () => ($("freeDialog").hidden = true);
+$("freeTest").onclick = async () => {
+  $("freeError").textContent = "";
+  const saved = await api.invoke("free:save", freeEntries());
+  if (saved.error && !/at least one/.test(saved.error)) return void ($("freeError").textContent = saved.error);
+  for (const box of document.querySelectorAll<HTMLElement>("#providers .outcome")) box.textContent = "Testing...";
+  const results: Record<string, string> = await api.invoke("free:test");
+  for (const box of document.querySelectorAll<HTMLElement>("#providers .provider")) {
+    const line = box.querySelector(".outcome") as HTMLElement;
+    const outcome = results[box.dataset.id!];
+    line.textContent = outcome ?? "No key entered.";
+    line.className = "outcome " + (outcome === "working" ? "good" : outcome ? "bad" : "dim");
+  }
+  if (!saved.error) {
+    workspace = saved;
+    render();
+  }
+};
+$("freeForm").onsubmit = async (event) => {
+  event.preventDefault();
+  const saved = await api.invoke("free:save", freeEntries());
+  if (saved.error) return void ($("freeError").textContent = saved.error);
+  workspace = saved;
+  $("freeDialog").hidden = true;
+  render();
+};
 /** Each Claude profile's title bar says which account it is signed in with, and warns about duplicates. */
 function showNetwork(): void {
   $("net").hidden = isOnline;
   for (const profile of workspace?.profiles ?? []) {
     const hint = terms.get(profile.id)?.panel.querySelector(".hint") as HTMLElement | null;
-    if (!hint || profile.kind === "ollama") continue;
+    if (!hint || profile.kind === "ollama" || profile.kind === "free") continue;
     const email = accounts[profile.id];
     const twin = email ? workspace.profiles.find((p) => p.id !== profile.id && accounts[p.id] === email) : undefined;
     hint.classList.toggle("warn", !isOnline || !!twin);
@@ -229,7 +366,7 @@ $("toggle").onclick = () => {
   const brain = $("brain");
   brain.hidden = !brain.hidden;
   $("toggle").textContent = brain.hidden ? "Show brain" : "Hide brain";
-  requestAnimationFrame(() => { fitAll(); resizeMap(); });
+  soon(() => { fitAll(); resizeMap(); });
 };
 const chosenKind = () => (document.querySelector('input[name="kind"]:checked') as HTMLInputElement).value;
 function showKind(): void {
