@@ -865,6 +865,8 @@ def main() -> None:
     parser.add_argument("folder", nargs="?", help="folder to work in")
     parser.add_argument("-p", "--prompt", help="answer one question and exit; piped input is attached")
     parser.add_argument("--app", action="store_true", help="open the window app: terminal with the memory graph beside it")
+    parser.add_argument("--serve", action="store_true", help="run the local AI gateway (OpenAI-compatible endpoint)")
+    parser.add_argument("--port", type=int, default=20129, help="port for --serve (default 20129)")
     parser.add_argument("--version", action="version", version=__version__)
     args = parser.parse_args()
 
@@ -872,6 +874,10 @@ def main() -> None:
         if not Path(args.folder).expanduser().is_dir():
             parser.error(f"folder not found: {args.folder}")
         os.chdir(Path(args.folder).expanduser())
+    if args.serve:
+        from agentic_lazy_tool import gateway
+
+        return gateway.serve(args.port)
     if args.app:
         from agentic_lazy_tool import webapp
 

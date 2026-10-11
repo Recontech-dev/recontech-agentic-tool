@@ -23,6 +23,7 @@ The hook stops a commit that contains an API key or a personal data file. Run th
 | `src/agentic_lazy_tool/providers.py` | Claude adapter and the OpenAI-compatible adapter; add providers to `PRESETS` |
 | `src/agentic_lazy_tool/memory.py` | Project memory, topics and search |
 | `src/agentic_lazy_tool/tasks.py` | Task detection rules |
+| `src/agentic_lazy_tool/gateway.py` | Local OpenAI-compatible gateway and its dashboard |
 | `src/agentic_lazy_tool/webapp.py`, `webui.py` | Window app: local server and the page with the memory graph |
 | `packaging/build_exe.py` | Builds `dist/AgenticLazyTool.exe` |
 

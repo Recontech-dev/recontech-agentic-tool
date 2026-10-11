@@ -8,6 +8,7 @@ A chat terminal for everyday development that keeps going when one AI runs out. 
 - **Project aware:** point it at a folder, attach files, copy code blocks out.
 - **Debate mode:** several models argue a question and one gives the verdict.
 - **Project memory:** notes from past sessions are kept per project and given to the model in later sessions.
+- **Local AI gateway:** `alt --serve` gives every OpenAI-compatible tool one address with failover across your profiles.
 - **Works offline:** with no internet it uses a local model if you have one, and otherwise answers from your stored notes and past conversations.
 - **Better prompts:** it detects the kind of task (debug, review, explain, ...) and can rewrite a rough request into a clear prompt.
 - **Saved conversations:** every chat is saved and can be resumed.
@@ -248,6 +249,37 @@ The tool remembers each project across sessions.
 Memory is a tree of plain files: one folder per project under `~/.agentic-lazy-tool/memory/`, each holding its notes. Projects are identified by their folder path, so a project you move or rename starts a new set of notes; the old ones stay and can still be found with `/recall`.
 
 Nothing is deleted when a session ends. The full conversations are kept as well (see `/sessions`), and notes are only removed when you run `/memory forget`.
+
+## Gateway: one AI address for all your tools
+
+`alt --serve` turns your profiles into a local AI gateway. Any tool that speaks the OpenAI API (Cursor, Cline, Continue, Open WebUI, your own scripts) points at one address, and the gateway picks the provider.
+
+```
+alt --serve
+
+  Endpoint   http://127.0.0.1:20129/v1
+  API key    alt-...
+  Model      auto   (or the name of one profile)
+  Dashboard  http://127.0.0.1:20129/?key=alt-...
+```
+
+In the other tool, set the base URL to the endpoint, the API key to the one shown, and the model to `auto`.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:20129/v1", api_key="alt-...")
+reply = client.chat.completions.create(model="auto", messages=[{"role": "user", "content": "hello"}])
+```
+
+- **Failover:** `auto` tries your profiles in chain order and skips any that are cooling down, exactly like the chat. A request moves to the next profile if the first fails before it starts answering.
+- **Pick one:** use a profile name as the model (for example `groq`) to try that profile first.
+- **Memory:** send the header `X-Alt-Project: D:\my-project` and the model also receives that project's stored notes.
+- **Dashboard:** shows each profile's state, how many requests it served, and recent requests with what was skipped and why. It links to the memory graph.
+- **Streaming and tool calls** work with OpenAI-compatible profiles. Claude profiles answer text requests; requests with tools skip them.
+- **Safety:** it listens only on `127.0.0.1` and needs its own key, so other computers, web pages and programs without the key cannot use your accounts.
+
+It uses your API keys and free providers. Subscription logins (Claude Pro/Max and similar) are not supported.
 
 ## Working offline
 
