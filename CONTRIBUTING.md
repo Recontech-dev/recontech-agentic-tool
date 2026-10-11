@@ -29,6 +29,9 @@ printf '#!/bin/sh\nnode scripts/check-secrets.mjs\n' > .git/hooks/pre-commit
 | `src/brain/sessions.ts` | Reads Claude Code session transcripts into the session index |
 | `src/brain/brain.ts` | Search, project summary and the graph |
 | `src/brain/workspace.ts` | Profiles, existing Claude Code folders, and the project folder |
+| `src/brain/kits.ts` | Project kits and terminal roles: the standing instructions and kit detection |
+| `src/brain/share.ts` | Team memory: the share file in the project folder |
+| `src/brain/meaning.ts` | Search by meaning with a local embedding model |
 | `src/brain/launch.ts` | How each profile's Claude Code starts (sign-in or Ollama), internet and Ollama checks |
 | `src/brain/sorting.ts`, `src/brain/sorter.ts` | Smart sorting: the questions asked of Laya, and the background worker |
 | `src/proxy/translate.ts`, `src/proxy/server.ts` | Free models bridge: translates Claude Code's requests for OpenAI-compatible providers, with failover |
@@ -36,6 +39,7 @@ printf '#!/bin/sh\nnode scripts/check-secrets.mjs\n' > .git/hooks/pre-commit
 | `src/main/free.ts` | Free models settings and encrypted API keys |
 | `src/mcp/server.ts` | The brain as an MCP server for Claude Code |
 | `src/test/` | Tests (`node --test`) |
+| `docs/index.html` | The project website (GitHub Pages) |
 
 ## Rules
 

@@ -16,7 +16,11 @@ Agentic Lazy Tool puts your Claude Code terminals side by side in one window and
 - **See your brain:** a live network beside the terminals shows your projects, past sessions (coloured by profile), notes and the topics that link them. It arranges itself so nothing overlaps and zooms to fit as it grows.
 - **Terminals that work together:** ask one terminal's Claude to read another terminal, hand it a task, or discuss an approach with it. For example: "ask the Work terminal to review this change and report back".
 - **Resume anything:** click a past session and press **Resume** to continue it in the right terminal and folder.
-- **Search everything:** find any earlier decision or session across all projects.
+- **Search everything:** find any earlier decision or session across all projects, by words or, with a small local model, by meaning.
+- **Roles:** make one terminal the Builder, another the Reviewer or Tester, and they hand work to each other.
+- **Project kits:** the app recognises website, mobile, Unity and Godot projects and gives Claude the right working rules for each.
+- **Team memory:** write a project's notes to a file in the project so teammates can import them.
+- **Unfinished work list:** what was left unfinished, with one click to resume.
 - **Smart sorting (optional):** a local model labels every session as bug fix, feature, refactor, setup and deploy, tests, docs or question, and spots work that was left unfinished. Claude is told about unfinished work first, and the graph can show only unfinished sessions or one kind of work.
 - **Free models when you hit a limit:** a special terminal runs Claude Code on free AI providers (Gemini, OpenRouter, Cerebras, Groq) with your own free keys. It is kept in a container, so the free AI only sees what you hand it. When a Claude profile reaches its usage limit, a bar offers to open it.
 - **Works offline:** an Ollama profile runs Claude Code on a model on your own computer, with the same brain, when there is no internet.
@@ -25,6 +29,8 @@ Agentic Lazy Tool puts your Claude Code terminals side by side in one window and
 ![Three Claude Code profiles side by side with the brain graph](docs/screenshot.png)
 
 *The screenshot uses made-up demo projects.*
+
+Website: https://erlruben.github.io/agentic-lazy-tool/
 
 ## Install (Windows)
 
@@ -45,6 +51,40 @@ Windows may show "Windows protected your PC" because the app is new and not code
 An **Offline** badge appears in the top bar when Claude cannot be reached; Claude profiles then show "needs internet".
 
 Buttons: **↻** restarts a terminal, **✕** removes a profile (its sign-in and past sessions stay on disk), **Tabs/Grid** switches the layout, **Hide brain** gives the terminals the whole window.
+
+### Roles
+
+Each terminal's title bar has a role menu: **Builder**, **Reviewer** or **Tester**. A role is a standing instruction given to Claude Code when the terminal starts:
+
+- The **Builder** writes the code, then asks a Reviewer or Tester terminal to check it and fixes what they report.
+- The **Reviewer** reads the changes it is asked about and answers with problems and fixes; it does not rewrite the code.
+- The **Tester** runs and writes tests and reports exactly what failed.
+
+A typical setup is Builder in one terminal and Reviewer in another: tell the Builder what to make, and it gets its work reviewed without you carrying messages between them. Changing a role takes effect when that terminal restarts.
+
+### Project kits
+
+Next to the folder button is the **Kit** menu. The app looks at the files in your project folder and picks a kit: **Website**, **Mobile app**, **Unity game**, **Godot game**, or **General**. A kit is a short set of working rules for that kind of project. The Unity kit, for example, tells Claude to check the Unity and package versions before using an API, never to hand-edit scene, prefab or meta files, and to say what to do in the Editor to test a change. You can pick a different kit by hand; the choice is remembered per project and applies when a terminal starts.
+
+### Team memory
+
+Click **Team** to share what the brain knows about a project:
+
+- **Write the share file** saves the project's notes and the titles of unfinished work to `.alt-brain.json` in the project folder. Commit it with the project.
+- A teammate who opens the project in this app sees a bar offering the notes they do not have yet. **Import** adds them to their own brain.
+- Conversations and prompts are never included, and secrets are masked. Anyone who can read the project can read the file, so do not share notes you want kept private.
+
+### Notes and unfinished work
+
+- Type in **Add a note about this project** under the graph to save a note yourself. Click a note in the graph and press **Delete this note** to remove it. The same fact is not stored twice.
+- With Smart sorting on, **Unfinished work** above the graph lists the sessions that ended unfinished, this project's first, each with a **Resume** button.
+
+### Comfort
+
+- **A−** and **A+** change the terminal text size.
+- Drag the line between the terminals and the brain to resize the brain panel.
+- **Ctrl+Alt+1** to **Ctrl+Alt+6** switch to a terminal; **Ctrl+Alt+B** shows or hides the brain.
+- When a newer version is published, a bar at the top offers the download page. The check asks GitHub only for the latest version number.
 
 ### Terminals working together
 
@@ -95,6 +135,7 @@ How it works and what to expect:
 - Claude Code in that terminal talks to a small bridge inside the app, which translates each request for the free provider. Providers are tried from top to bottom, and the next one takes over when one is rate limited, out of quota or failing.
 - Free models are weaker and slower than Claude, and their free tiers are limited. Claude Code sends long instructions with every request, which some free tiers (Groq's in particular) cannot fit.
 - Model names and free tiers change often. If **Test keys** reports a model problem, type a current model name from the provider's site into the model box.
+- **Your own provider:** the last row takes any service with an OpenAI-compatible API (address, optional key, model), including one running on your own computer or network. It is tried after the others.
 - Your keys are encrypted with your operating system's own protection and stored only on your computer. They are sent only to their own provider.
 - Whatever reaches that terminal goes to the free provider that answers, under that provider's terms, not to Anthropic. With the container on, that is only what you type, paste or send it.
 
@@ -150,6 +191,7 @@ Smart sorting is off until you turn it on with the **Smart sorting** button abov
 | Smart sorting labels | `~/.agentic-lazy-tool/brain/labels.json`, model in `~/.agentic-lazy-tool/models/` or the folder you chose | each session's kind of work and whether it was finished |
 
 - Notes and sessions are linked by the words they share, which is how the topics in the graph appear. It is a searchable memory, not a trained neural network.
+- **Search by meaning:** if [Ollama](https://ollama.com/download) is running with the `nomic-embed-text` model (`ollama pull nomic-embed-text`, about 270 MB), search and Claude's `recall` also find things by meaning, so "how do we ship the site" finds the deploy session. It runs on your computer. Without it, search matches words.
 - API keys, tokens and `password=...` values are masked before anything is stored.
 - The brain checks for new sessions every 10 seconds while the app is open.
 - To use the brain in a Claude Code you start yourself, run `claude --mcp-config "%USERPROFILE%\.agentic-lazy-tool\brain\mcp.json"`. The file is written the first time the app starts a terminal.
