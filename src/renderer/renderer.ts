@@ -114,6 +114,9 @@ function terminalText(id: string, lines: number): string {
 function startFree(): void {
   const profile = workspace.profiles.find((p) => p.kind === "free");
   if (!profile) return void openFreeDialog();
+  if (!started.has(profile.id) && !confirm(
+    "Start the free terminal?\n\nEverything it works on is sent to the free provider that answers: your prompts, the files Claude Code reads in this project, the project's memory notes, and anything it reads from other terminals. Providers may keep or use that under their own terms.\n\nFor work that must stay private, use an Ollama profile instead.",
+  )) return;
   terms.get(profile.id)?.panel.querySelector(".cover")?.remove();
   select(profile.id);
   if (!started.has(profile.id)) setTimeout(() => start(profile.id), 30);
@@ -268,7 +271,7 @@ $("limitClose").onclick = () => ($("limit").hidden = true);
 
 interface FreeInfo {
   enabled: boolean; canEncrypt: boolean;
-  providers: { id: string; name: string; model: string; hasKey: boolean; keyUrl: string; note: string }[];
+  providers: { id: string; name: string; model: string; hasKey: boolean; keyUrl: string; note: string; privacy: string }[];
   status: { providers: { id: string; name: string; state: string; served: number; lastProblem: string }[] };
 }
 
@@ -301,7 +304,10 @@ async function openFreeDialog(): Promise<void> {
     result.className = "outcome dim";
     const state = info.status.providers.find((p) => p.id === provider.id);
     result.textContent = provider.hasKey && state ? `${state.state}${state.served ? `, ${state.served} requests served` : ""}${state.lastProblem ? `. Last problem: ${state.lastProblem}` : ""}` : "";
-    box.append(head, key, model, result);
+    const policy = document.createElement("div");
+    policy.className = "policy";
+    policy.textContent = provider.privacy;
+    box.append(head, policy, key, model, result);
     list.append(box);
   }
   $("freeDialog").hidden = false;

@@ -80,6 +80,8 @@
   .provider input { width:100%; }
   .provider .outcome { grid-column:1 / -1; font-size:12px; min-height:1em; overflow-wrap:anywhere; }
   .good { color:var(--open); } .bad { color:#ff7b7b; }
+  .privacy { border:1px solid var(--topic); border-radius:6px; padding:8px 10px; }
+  .provider .policy { grid-column:1 / -1; font-size:12px; color:var(--topic); }
   #found { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#1f2a3a; border-bottom:1px solid var(--line); }
   #found[hidden] { display:none; }
   #needFolder { grid-column:1 / -1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
@@ -163,6 +165,7 @@
   <form id="freeForm">
     <strong>Free models terminal</strong>
     <div class="dim">A special terminal that runs Claude Code on free AI providers, sharing the same brain. Use it when a Claude profile reaches its usage limit. Add a free API key for at least one provider; they are tried from top to bottom, and the next one takes over when one is limited. Keys are encrypted and stored only on this computer. Free models are weaker and slower than Claude.</div>
+    <div class="privacy"><b>Your data and free providers.</b> Whatever this terminal works on is sent to the provider that answers: your prompts, the files Claude Code reads, the project's memory notes, and anything it reads from other terminals. Each provider handles that under its own terms, shown below. For work that must stay private, use an Ollama profile instead: it runs on this computer and sends nothing out.</div>
     <div id="providers"></div>
     <div id="freeError" class="bad"></div>
     <div class="row" style="display:flex; gap:8px; justify-content:flex-end">

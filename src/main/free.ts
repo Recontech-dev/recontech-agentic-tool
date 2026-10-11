@@ -62,7 +62,7 @@ export class FreeModels {
   /** Providers in the order they are tried. */
   providers(): Provider[] {
     return Object.entries(PRESETS).map(([id, preset]) => ({
-      id, name: preset.name, baseUrl: preset.baseUrl, maxOutput: preset.maxOutput, strictSchema: preset.strictSchema,
+      id, name: preset.name, baseUrl: preset.baseUrl, maxOutput: preset.maxOutput, strictSchema: preset.strictSchema, extraBody: preset.extraBody,
       model: this.settings.models[id] || preset.model, key: this.keys[id] ?? "",
     }));
   }
@@ -76,7 +76,7 @@ export class FreeModels {
     return {
       canEncrypt: safeStorage.isEncryptionAvailable(),
       providers: this.providers().map((p) => ({
-        id: p.id, name: p.name, model: p.model, hasKey: !!p.key, keyUrl: PRESETS[p.id].keyUrl, note: PRESETS[p.id].note,
+        id: p.id, name: p.name, model: p.model, hasKey: !!p.key, keyUrl: PRESETS[p.id].keyUrl, note: PRESETS[p.id].note, privacy: PRESETS[p.id].privacy,
       })),
       status: this.proxy.status(),
     };

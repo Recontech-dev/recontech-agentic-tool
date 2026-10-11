@@ -17,25 +17,33 @@ export interface Provider {
   maxOutput: number;
   /** Some providers reject parts of JSON Schema that Claude Code's tools use. */
   strictSchema?: boolean;
+  /** Extra fields added to every request, used to switch on a provider's privacy options. */
+  extraBody?: Record<string, unknown>;
 }
 
 /** Starting points for the providers with a free tier. Models change often, so the user can edit them. */
-export const PRESETS: Record<string, Omit<Provider, "key" | "id"> & { keyUrl: string; note: string }> = {
+export const PRESETS: Record<string, Omit<Provider, "key" | "id"> & { keyUrl: string; note: string; privacy: string }> = {
   gemini: {
     name: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-2.5-flash", maxOutput: 16000,
     strictSchema: true, keyUrl: "https://aistudio.google.com/apikey", note: "Generous free tier; the best free choice for Claude Code.",
+    privacy: "Privacy: Google's terms allow it to use free-tier requests to improve its products. Do not use a free Gemini key for confidential code; check Google's current terms.",
   },
   openrouter: {
     name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", model: "qwen/qwen3-coder:free", maxOutput: 8192,
     keyUrl: "https://openrouter.ai/keys", note: "Models ending in :free cost nothing, with a small daily request limit.",
+    // Ask OpenRouter to use only providers that do not store or train on the request.
+    extraBody: { provider: { data_collection: "deny" } },
+    privacy: "Privacy: this app tells OpenRouter to use only providers that do not keep or train on your data. Some free models are unavailable under that rule.",
   },
   cerebras: {
     name: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", model: "gpt-oss-120b", maxOutput: 8192,
     keyUrl: "https://cloud.cerebras.ai", note: "Very fast; free tier with daily limits.",
+    privacy: "Privacy: read the provider's data policy before sending confidential code.",
   },
   groq: {
     name: "Groq", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", maxOutput: 8192,
     keyUrl: "https://console.groq.com/keys", note: "Fast, but its free tier allows few tokens per minute; Claude Code's long instructions may not fit.",
+    privacy: "Privacy: read the provider's data policy before sending confidential code.",
   },
 };
 
@@ -157,7 +165,7 @@ export class FreeProxy {
         attempts.push({ provider: provider.name, problem, limited: !/key rejected/.test(problem), permanent: /key rejected/.test(problem) });
         continue;
       }
-      const body = toOpenAI(request, provider.model, provider.maxOutput);
+      const body = { ...toOpenAI(request, provider.model, provider.maxOutput), ...(provider.extraBody ?? {}) };
       if (provider.strictSchema && Array.isArray(body.tools)) {
         body.tools = (body.tools as any[]).map((t) => ({ ...t, function: { ...t.function, parameters: simplifySchema(t.function.parameters) } }));
       }

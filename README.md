@@ -85,6 +85,27 @@ How it works and what to expect:
 - Your keys are encrypted with your operating system's own protection and stored only on your computer. They are sent only to their own provider.
 - Your messages and code in that terminal go to the free provider that answers, under that provider's terms, not to Anthropic.
 
+## Privacy
+
+**What stays on your computer, always.** The app has no server and no account, and it sends nothing to its authors or to other users. Your sessions, memory notes, profiles, settings and API keys exist only on your computer, so every person who installs the app has their own separate, private setup.
+
+**What goes to an AI provider.** An AI can only answer what it is sent. Whatever a terminal works on goes to the provider behind that terminal: your prompts, the files Claude Code reads, the project's memory notes, and anything it reads from another terminal.
+
+| Terminal | Where its requests go | What the provider may do with them |
+|---|---|---|
+| Claude profile | Anthropic, through Claude Code | Governed by your Claude plan and its privacy settings |
+| Free models | The free provider that answers | Governed by that provider's terms; free tiers often allow more use of your data |
+| Ollama (offline) | Nowhere; it runs on your computer | Nothing leaves the computer |
+
+What the app does about it:
+
+- The Free models dialog shows each provider's privacy note, and the free terminal asks for confirmation before it first starts.
+- Requests to OpenRouter carry the instruction to use only providers that do not keep or train on your data.
+- API keys are encrypted with your operating system's own protection, and secrets are masked before anything is stored in memory.
+- For work that must not leave your computer, use an Ollama profile.
+
+The app cannot control what a provider does with data once it has been sent, so read the terms of any provider you add.
+
 ## Offline with Ollama
 
 1. Install [Ollama](https://ollama.com/download) and, while online, download a model that can use tools, for example `ollama pull qwen3:8b` (about 5 GB) or `ollama pull qwen3-coder:30b` (about 19 GB, much better, needs a strong PC). Very small models such as `qwen3:0.6b` start, but cannot use tools or the brain.

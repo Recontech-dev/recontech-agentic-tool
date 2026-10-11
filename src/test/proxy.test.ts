@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as http from "node:http";
 import { test } from "node:test";
 
-import { FreeProxy, Provider, simplifySchema } from "../proxy/server";
+import { FreeProxy, PRESETS, Provider, simplifySchema } from "../proxy/server";
 import { StreamTranslator, toAnthropicMessage, toOpenAI } from "../proxy/translate";
 
 test("a Claude Code request becomes an OpenAI request, tools and tool results included", () => {
@@ -95,7 +95,7 @@ test("the bridge moves to the next free provider when one is limited, and guards
   const upstream = await fakeProvider();
   const providers: Provider[] = [
     { id: "a", name: "First", baseUrl: upstream.url, model: "m1", key: "limited", maxOutput: 100 },
-    { id: "b", name: "Second", baseUrl: upstream.url, model: "m2", key: "second-key", maxOutput: 100 },
+    { id: "b", name: "Second", baseUrl: upstream.url, model: "m2", key: "second-key", maxOutput: 100, extraBody: { provider: { data_collection: "deny" } } },
     { id: "c", name: "No key", baseUrl: upstream.url, model: "m3", key: "", maxOutput: 100 },
   ];
   const proxy = new FreeProxy(() => providers);
@@ -109,6 +109,9 @@ test("the bridge moves to the next free provider when one is limited, and guards
   assert.equal(plain.role, "assistant");
   assert.equal(upstream.seen[1].body.model, "m2");
   assert.equal(upstream.seen[1].body.max_tokens, 100);
+  assert.deepEqual(upstream.seen[1].body.provider, { data_collection: "deny" }, "the provider's privacy option is sent with every request");
+  assert.deepEqual(PRESETS.openrouter.extraBody, { provider: { data_collection: "deny" } });
+  assert.ok(Object.values(PRESETS).every((p) => p.privacy.startsWith("Privacy:")), "every provider tells the user how it treats data");
 
   const streamed = await (await call({ ...ask, stream: true })).text();
   assert.match(streamed, /event: message_start[\s\S]*"text":"from "[\s\S]*"text":"second-key"[\s\S]*"stop_reason":"end_turn"[\s\S]*event: message_stop/);
