@@ -32,6 +32,7 @@
   #work.tabs #panels { grid-template-columns:1fr; }
   #work.tabs .panel:not(.active) { display:none; }
   .panel { min-width:0; min-height:0; display:flex; flex-direction:column; background:#000; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .panel[hidden] { display:none; }
   .bar { display:flex; align-items:center; gap:8px; padding:4px 8px; background:#0d1015; border-bottom:1px solid var(--line); color:var(--dim); }
   .bar .dot { width:9px; height:9px; border-radius:50%; flex:none; }
   .bar .name { color:var(--text); font-weight:600; white-space:nowrap; }
@@ -61,6 +62,12 @@
   #dialog form { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; width:min(440px, calc(100% - 32px)); display:flex; flex-direction:column; gap:10px; }
   #dialog .row { display:flex; gap:8px; justify-content:flex-end; }
   #error { color:#ff7b7b; min-height:1em; }
+  #found { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#1f2a3a; border-bottom:1px solid var(--line); }
+  #found[hidden] { display:none; }
+  #needFolder { grid-column:1 / -1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
+                text-align:center; color:var(--dim); border:1px dashed var(--line); border-radius:6px; padding:24px; }
+  #needFolder b { color:var(--text); font-size:16px; }
+  #needFolder button { border-color:var(--accent); padding:8px 16px; }
   #dialog label { display:flex; gap:8px; align-items:flex-start; }
   #dialog select { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 8px; width:100%; }
   #net { color:#1b1f26; background:var(--topic); border-radius:6px; padding:3px 8px; font-weight:600; }
@@ -79,6 +86,12 @@
   <button id="layout">Tabs</button>
   <button id="toggle">Hide brain</button>
 </header>
+<div id="found" hidden>
+  <span id="foundText"></span>
+  <span class="spacer"></span>
+  <button id="foundAdd">Add them</button>
+  <button id="foundDismiss">Not now</button>
+</div>
 <main>
   <section id="work">
     <div id="tabs"></div>

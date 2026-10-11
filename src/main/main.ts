@@ -249,9 +249,20 @@ ipcMain.handle("workspace:layout", (_event, layout: "grid" | "tabs") => {
   ws.save(workspace);
   return workspace;
 });
+ipcMain.handle("folders:unused", () => ws.unusedClaudeFolders(workspace));
+ipcMain.handle("folders:adopt", () => {
+  ws.adoptFolders(workspace);
+  pushGraph(true);
+  return workspace;
+});
+ipcMain.handle("folders:dismiss", () => {
+  ws.dismissFolders(workspace);
+  return workspace;
+});
 ipcMain.handle("profile:options", async () => ({
   ollama: await ollamaModels(),
   folders: ws.existingClaudeFolders().filter((f) => !workspace.profiles.some((p) => p.configDir && sameFolder(p.configDir, f))),
+  full: workspace.profiles.length >= ws.MAX_PROFILES,
 }));
 ipcMain.handle("profile:add", (_event, request: ws.NewProfile) =>
   result(() => {

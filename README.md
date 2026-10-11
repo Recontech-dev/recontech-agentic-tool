@@ -34,9 +34,9 @@ Windows may show "Windows protected your PC" because the app is new and not code
 
 ## Use it
 
-1. Click **Choose project folder**. Every terminal starts there.
+1. Click **Choose project folder**. Every terminal starts there; no terminal starts until a folder is chosen. The first time Claude Code opens a folder it asks whether you trust it: choose **Yes** for your own projects.
 2. The first terminal (Main) runs Claude Code with your normal sign-in.
-3. Click **+ Profile** to add another, for example Work. Its terminal asks you to sign in to Claude Code the first time; after that it stays signed in. If you already have signed-in Claude Code folders such as `~/.claude-account1`, the app finds them: on first start they become profiles, and **+ Profile** offers any that are not used yet.
+3. Click **+ Profile** to add another, for example Work. Its terminal asks you to sign in to Claude Code the first time; after that it stays signed in. If you already have signed-in Claude Code folders such as `~/.claude-account1`, the app finds them and shows a bar at the top offering to add them as profiles with their existing sign-ins. **+ Profile** also lists any that are not used yet.
 4. Work as usual. Claude sees the brain as tools named `remember`, `recall`, `project_memory` and `forget`, and is told to check the project's memory when it starts and to save decisions as it goes. You can also ask it directly: "remember that we deploy with Docker", "what did we decide about the login page last week?"
 5. Use the search box above the graph to find anything from earlier sessions or notes, across all projects.
 

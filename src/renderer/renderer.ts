@@ -118,9 +118,47 @@ function render(): void {
     tab.onclick = () => select(profile.id);
     $("tabs").append(tab);
   }
+  if (!workspace.folder) {
+    // Claude Code works on a folder. Without one it would start in the home folder and ask whether
+    // to trust it, so the terminals wait until a project folder is chosen.
+    for (const { panel } of terms.values()) panel.hidden = true;
+    const ask = document.createElement("div");
+    ask.id = "needFolder";
+    const title = document.createElement("b");
+    title.textContent = "Choose the project folder to work in";
+    const text = document.createElement("div");
+    text.textContent = `Claude Code will start there in ${count === 1 ? "the terminal" : `all ${count} terminals`}. You can change it any time with the button at the top left.`;
+    const button = document.createElement("button");
+    button.textContent = "Choose project folder";
+    button.onclick = () => $("folder").click();
+    ask.append(title, text, button);
+    $("panels").append(ask);
+    return;
+  }
   select(workspace.profiles.some((p) => p.id === active) ? active : workspace.profiles[0].id);
   requestAnimationFrame(() => workspace.profiles.forEach((p) => start(p.id)));
 }
+
+/** Offer signed-in Claude Code folders that are on this computer but not in the workspace yet. */
+async function offerFoundFolders(): Promise<void> {
+  const folders: string[] = await api.invoke("folders:unused");
+  const room = 6 - workspace.profiles.length;
+  $("found").hidden = !folders.length || room <= 0;
+  if ($("found").hidden) return;
+  const names = folders.map((f) => f.split(/[\\/]/).pop()).join(", ");
+  $("foundText").textContent =
+    `Found ${folders.length} Claude Code sign-in folder${folders.length === 1 ? "" : "s"} already on this computer (${names}). Add ${folders.length === 1 ? "it" : "them"} as profiles? They keep their existing sign-ins.`;
+}
+$("foundAdd").onclick = async () => {
+  workspace = await api.invoke("folders:adopt");
+  render();
+  showNetwork();
+  offerFoundFolders();
+};
+$("foundDismiss").onclick = async () => {
+  workspace = await api.invoke("folders:dismiss");
+  offerFoundFolders();
+};
 
 api.on("term:data", (id: string, data: string) => terms.get(id)?.term.write(data));
 function showNetwork(): void {
@@ -574,6 +612,7 @@ new ResizeObserver(() => resizeMap()).observe(canvas);
   resizeMap();
   render();
   showNetwork();
+  offerFoundFolders();
   showSorting(await api.invoke("sorting:get"));
   const frame = () => {
     if (quietFrames < QUIET_AFTER || dragged || panning) {

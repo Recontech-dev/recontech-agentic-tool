@@ -33,6 +33,8 @@ export interface Workspace {
   folder: string;
   profiles: Profile[];
   layout: "grid" | "tabs";
+  /** Existing Claude Code folders the user chose not to add, so the app does not offer them again. */
+  dismissedFolders?: string[];
   /** Smart sorting (Laya) is off unless the user turns it on; its model is stored in modelDir. */
   sorting?: { enabled: boolean; modelDir: string };
 }
@@ -52,6 +54,39 @@ export function existingClaudeFolders(): string[] {
   }
 }
 
+/** "Account 1" for ~/.claude-account1, otherwise the part after ".claude-". */
+export function nameForFolder(folder: string): string {
+  return path.basename(folder).replace(/^\.claude-/, "").replace(/^account(\d+)$/i, "Account $1");
+}
+
+/** Signed-in Claude Code folders on this computer that are neither a profile yet nor dismissed. */
+export function unusedClaudeFolders(workspace: Workspace): string[] {
+  const same = (a: string, b: string) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+  return existingClaudeFolders().filter(
+    (folder) =>
+      !workspace.profiles.some((p) => p.configDir && same(p.configDir, folder)) &&
+      !(workspace.dismissedFolders ?? []).some((d) => same(d, folder)),
+  );
+}
+
+/** Add each unused folder as a profile, as far as the limit allows. Returns how many were added. */
+export function adoptFolders(workspace: Workspace): number {
+  let added = 0;
+  for (const folder of unusedClaudeFolders(workspace)) {
+    if (workspace.profiles.length >= MAX_PROFILES) break;
+    let name = nameForFolder(folder);
+    for (let n = 2; workspace.profiles.some((p) => p.name.toLowerCase() === name.toLowerCase()); n++) name = `${nameForFolder(folder)} ${n}`;
+    addProfile(workspace, { name, configDir: folder });
+    added++;
+  }
+  return added;
+}
+
+export function dismissFolders(workspace: Workspace): void {
+  workspace.dismissedFolders = [...(workspace.dismissedFolders ?? []), ...unusedClaudeFolders(workspace)];
+  save(workspace);
+}
+
 export function load(): Workspace {
   try {
     const data = JSON.parse(fs.readFileSync(workspaceFile(), "utf8"));
@@ -62,7 +97,7 @@ export function load(): Workspace {
   }
   const profiles: Profile[] = [{ id: "default", name: "Main", color: COLORS[0], configDir: null, kind: "claude" }];
   for (const folder of existingClaudeFolders().slice(0, MAX_PROFILES - 1)) {
-    const name = path.basename(folder).replace(/^\.claude-/, "").replace(/^account(\d+)$/i, "Account $1");
+    const name = nameForFolder(folder);
     profiles.push({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, color: COLORS[profiles.length], configDir: folder, kind: "claude" });
   }
   return { folder: "", layout: "grid", profiles };

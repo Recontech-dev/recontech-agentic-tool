@@ -243,3 +243,20 @@ test("smart sorting labels settled sessions and the brain uses the labels", asyn
   brain.update();
   assert.equal(brain.graph(shop).nodes.find((n) => n.text === "Fix the cart total")!.tag, undefined, "labels of an older transcript are not shown");
 });
+
+test("sign-in folders found later are offered once, added on request, or dismissed", () => {
+  const workspace = ws.load();
+  ws.save(workspace);
+  for (const name of [".claude-account1", ".claude-account2"]) fs.mkdirSync(path.join(root, name));
+  const later = ws.load();
+  assert.deepEqual(later.profiles.map((p) => p.name), ["Main"], "an existing workspace is not changed behind the user's back");
+  assert.equal(ws.unusedClaudeFolders(later).length, 2);
+  assert.equal(ws.adoptFolders(later), 2);
+  assert.deepEqual(ws.load().profiles.map((p) => p.name), ["Main", "Account 1", "Account 2"]);
+  assert.equal(ws.load().profiles[1].configDir, path.join(root, ".claude-account1"));
+  assert.equal(ws.unusedClaudeFolders(later).length, 0);
+
+  fs.mkdirSync(path.join(root, ".claude-account3"));
+  ws.dismissFolders(later);
+  assert.equal(ws.unusedClaudeFolders(ws.load()).length, 0, "dismissed folders are not offered again");
+});
