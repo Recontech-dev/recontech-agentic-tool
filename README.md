@@ -46,6 +46,10 @@ Buttons: **↻** restarts a terminal, **✕** removes a profile (its sign-in and
 
 ### About accounts
 
+Each terminal's title bar shows the email its Claude Code is signed in with, and warns when two profiles use the same account.
+
+Claude Code signs in through your web browser, and the browser approves whichever claude.ai account it is already signed in to. To sign a profile in to a different account, type `/logout` and then `/login` in its terminal, copy the sign-in link into a private browser window, and sign in there with the account you want.
+
 Each profile is a separate Claude Code sign-in. Use your own accounts, for example a personal and a work account. Sharing or borrowing someone else's Claude account breaks Anthropic's terms and puts that account at risk. The app does not switch accounts for you when a usage limit is reached.
 
 ## Offline with Ollama

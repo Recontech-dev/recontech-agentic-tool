@@ -8,7 +8,7 @@ import * as pty from "node-pty";
 import { ChildProcess, spawn } from "node:child_process";
 
 import { Brain } from "../brain/brain";
-import { claudeCommand, ollamaModels, online, profileEnv } from "../brain/launch";
+import { claudeCommand, ollamaModels, online, profileEnv, signedInAs } from "../brain/launch";
 import { home } from "../brain/paths";
 import { sameFolder } from "../brain/sessions";
 import { bundleReady } from "../brain/sorting";
@@ -249,6 +249,7 @@ ipcMain.handle("workspace:layout", (_event, layout: "grid" | "tabs") => {
   ws.save(workspace);
   return workspace;
 });
+ipcMain.handle("profile:accounts", () => Object.fromEntries(workspace.profiles.map((p) => [p.id, signedInAs(p)])));
 ipcMain.handle("folders:unused", () => ws.unusedClaudeFolders(workspace));
 ipcMain.handle("folders:adopt", () => {
   ws.adoptFolders(workspace);

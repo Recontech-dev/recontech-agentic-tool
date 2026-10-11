@@ -20,7 +20,10 @@ const $ = (id: string) => document.getElementById(id)!;
 let workspace: Workspace;
 let active = "";
 let isOnline = true;
+let accounts: Record<string, string> = {};
 const terms = new Map<string, { term: any; fit: any; panel: HTMLElement }>();
+/** Profiles whose terminal has been started. A running terminal is never restarted unless the user asks. */
+const started = new Set<string>();
 
 /* ---------- Terminals ---------- */
 
@@ -46,21 +49,18 @@ function makePanel(profile: Profile): void {
   restart.title = "Restart this terminal";
   restart.textContent = "↻";
   restart.onclick = () => start(profile.id);
-  bar.append(dot, name, hint, spacer, restart);
-  if (workspace.profiles.length > 1) {
-    const remove = document.createElement("button");
-    remove.className = "icon";
-    remove.title = "Remove this profile from the workspace";
-    remove.textContent = "✕";
-    remove.onclick = async () => {
-      if (!confirm(`Remove ${profile.name}? Its terminal closes. Its sign-in and past sessions stay on disk.`)) return;
-      const answer = await api.invoke("profile:remove", profile.id);
-      if (answer.error) return alert(answer.error);
-      workspace = answer;
-      render();
-    };
-    bar.append(remove);
-  }
+  const remove = document.createElement("button");
+  remove.className = "icon remove";
+  remove.title = "Remove this profile from the workspace";
+  remove.textContent = "✕";
+  remove.onclick = async () => {
+    if (!confirm(`Remove ${profile.name}? Its terminal closes. Its sign-in and past sessions stay on disk.`)) return;
+    const answer = await api.invoke("profile:remove", profile.id);
+    if (answer.error) return alert(answer.error);
+    workspace = answer;
+    render();
+  };
+  bar.append(dot, name, hint, spacer, restart, remove);
   const body = document.createElement("div");
   body.className = "term";
   panel.append(bar, body);
@@ -80,6 +80,7 @@ function makePanel(profile: Profile): void {
 function start(id: string): void {
   const entry = terms.get(id);
   if (!entry) return;
+  started.add(id);
   entry.term.reset();
   fitAll();
   api.send("term:start", id, entry.term.cols, entry.term.rows);
@@ -99,18 +100,28 @@ function select(id: string): void {
   });
 }
 
+/**
+ * Bring the window in line with the workspace. Only what changed is touched: a new profile gets a
+ * panel and its terminal is started, a removed profile's panel goes, and every other terminal keeps
+ * running exactly as it was.
+ */
 function render(): void {
-  for (const { term } of terms.values()) term.dispose();
-  terms.clear();
-  $("panels").textContent = "";
-  $("tabs").textContent = "";
+  const wanted = new Set(workspace.profiles.map((p) => p.id));
+  for (const [id, { term, panel }] of terms) {
+    if (wanted.has(id)) continue;
+    term.dispose();
+    panel.remove();
+    terms.delete(id);
+    started.delete(id);
+  }
   const count = workspace.profiles.length;
   $("panels").style.setProperty("--cols", String(count <= 3 ? count : Math.ceil(count / 2)));
   $("work").classList.toggle("tabs", workspace.layout === "tabs");
   $("layout").textContent = workspace.layout === "tabs" ? "Grid" : "Tabs";
   $("folder").textContent = workspace.folder || "Choose project folder";
+  $("tabs").textContent = "";
   for (const profile of workspace.profiles) {
-    makePanel(profile);
+    if (!terms.has(profile.id)) makePanel(profile);
     const tab = document.createElement("button");
     tab.dataset.id = profile.id;
     tab.textContent = profile.name;
@@ -118,10 +129,14 @@ function render(): void {
     tab.onclick = () => select(profile.id);
     $("tabs").append(tab);
   }
+  for (const { panel } of terms.values()) {
+    panel.hidden = !workspace.folder;
+    (panel.querySelector(".remove") as HTMLElement).hidden = count <= 1;
+  }
+  $("needFolder")?.remove();
   if (!workspace.folder) {
     // Claude Code works on a folder. Without one it would start in the home folder and ask whether
     // to trust it, so the terminals wait until a project folder is chosen.
-    for (const { panel } of terms.values()) panel.hidden = true;
     const ask = document.createElement("div");
     ask.id = "needFolder";
     const title = document.createElement("b");
@@ -136,7 +151,12 @@ function render(): void {
     return;
   }
   select(workspace.profiles.some((p) => p.id === active) ? active : workspace.profiles[0].id);
-  requestAnimationFrame(() => workspace.profiles.forEach((p) => start(p.id)));
+  requestAnimationFrame(() => {
+    for (const profile of workspace.profiles) if (!started.has(profile.id)) start(profile.id);
+    fitAll();
+  });
+  showNetwork();
+  refreshAccounts();
 }
 
 /** Offer signed-in Claude Code folders that are on this computer but not in the workspace yet. */
@@ -152,7 +172,7 @@ async function offerFoundFolders(): Promise<void> {
 $("foundAdd").onclick = async () => {
   workspace = await api.invoke("folders:adopt");
   render();
-  showNetwork();
+  refreshAccounts();
   offerFoundFolders();
 };
 $("foundDismiss").onclick = async () => {
@@ -161,15 +181,28 @@ $("foundDismiss").onclick = async () => {
 };
 
 api.on("term:data", (id: string, data: string) => terms.get(id)?.term.write(data));
+/** Each Claude profile's title bar says which account it is signed in with, and warns about duplicates. */
 function showNetwork(): void {
   $("net").hidden = isOnline;
   for (const profile of workspace?.profiles ?? []) {
-    const hint = terms.get(profile.id)?.panel.querySelector(".hint");
+    const hint = terms.get(profile.id)?.panel.querySelector(".hint") as HTMLElement | null;
     if (!hint || profile.kind === "ollama") continue;
-    hint.classList.toggle("warn", !isOnline);
-    hint.textContent = (profile.configDir ? "own sign-in" : "your normal Claude Code sign-in") + (isOnline ? "" : " · needs internet");
+    const email = accounts[profile.id];
+    const twin = email ? workspace.profiles.find((p) => p.id !== profile.id && accounts[p.id] === email) : undefined;
+    hint.classList.toggle("warn", !isOnline || !!twin);
+    hint.textContent =
+      (email ? email : "not signed in yet") + (twin ? ` · same account as ${twin.name}` : "") + (isOnline ? "" : " · needs internet");
+    hint.title = twin
+      ? "Both profiles use the same Claude account. To change this one: type /logout, then /login, and approve in a private browser window signed in to the other account."
+      : "";
   }
 }
+async function refreshAccounts(): Promise<void> {
+  accounts = await api.invoke("profile:accounts");
+  showNetwork();
+}
+// A sign-in or sign-out happens inside the terminal, so the title bars are refreshed regularly.
+setInterval(refreshAccounts, 10_000);
 api.on("net:status", (online: boolean) => {
   isOnline = online;
   showNetwork();
@@ -179,8 +212,12 @@ api.on("term:exit", (id: string) => terms.get(id)?.term.write("\r\n\x1b[90m[The 
 
 $("folder").onclick = async () => {
   const before = workspace.folder;
+  if (started.size && !confirm("Changing the project folder restarts every terminal in the new folder. Running Claude Code sessions are closed; you can resume them later from the brain. Continue?")) return;
   workspace = await api.invoke("workspace:choose-folder");
-  if (workspace.folder !== before) render();
+  if (workspace.folder === before) return;
+  // The one case where every terminal restarts, because each must move to the new folder.
+  started.clear();
+  render();
 };
 $("layout").onclick = async () => {
   workspace = await api.invoke("workspace:layout", workspace.layout === "tabs" ? "grid" : "tabs");
@@ -529,6 +566,8 @@ function show(n: GraphNode | null): void {
     button.id = "resume";
     button.textContent = `Resume in ${ref.profile}`;
     button.onclick = async () => {
+      const target = workspace.profiles.find((p) => p.name === ref.profile);
+      if (target && started.has(target.id) && !confirm(`Resuming restarts ${ref.profile}'s terminal. What is running there now is closed. Continue?`)) return;
       const answer = await api.invoke("session:resume", ref);
       if (answer.error) return alert(answer.error);
       select(answer.id);
@@ -611,7 +650,7 @@ new ResizeObserver(() => resizeMap()).observe(canvas);
   workspace = await api.invoke("workspace:get");
   resizeMap();
   render();
-  showNetwork();
+  await refreshAccounts();
   offerFoundFolders();
   showSorting(await api.invoke("sorting:get"));
   const frame = () => {

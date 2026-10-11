@@ -1,6 +1,7 @@
 // How each profile's Claude Code is started, plus the checks for the internet and for Ollama.
 // Kept free of Electron so it can be tested on its own.
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { defaultClaudeDir } from "./paths";
@@ -36,6 +37,22 @@ export function claudeCommand(profile: Profile, mcpConfig: string, resume?: stri
 
 export function configDirOf(profile: Profile): string {
   return profile.configDir ?? defaultClaudeDir();
+}
+
+/**
+ * The email a profile's Claude Code is signed in with, or "" when it is not signed in.
+ * Claude Code writes this (not the login itself) in a settings file: ~/.claude.json for the normal
+ * sign-in, <config folder>/.claude.json for the others. Only the email is read.
+ */
+export function signedInAs(profile: Profile): string {
+  if (profile.kind === "ollama") return "";
+  const file = profile.configDir ? path.join(profile.configDir, ".claude.json") : path.join(path.dirname(defaultClaudeDir()), ".claude.json");
+  try {
+    const email = JSON.parse(fs.readFileSync(file, "utf8")).oauthAccount?.emailAddress;
+    return typeof email === "string" ? email : "";
+  } catch {
+    return "";
+  }
 }
 
 export function sameDir(a: string, b: string): boolean {

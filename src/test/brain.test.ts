@@ -260,3 +260,16 @@ test("sign-in folders found later are offered once, added on request, or dismiss
   ws.dismissFolders(later);
   assert.equal(ws.unusedClaudeFolders(ws.load()).length, 0, "dismissed folders are not offered again");
 });
+
+import { signedInAs } from "../brain/launch";
+
+test("a profile reports the email it is signed in with, and nothing else", () => {
+  const workspace = ws.load();
+  const work = ws.addProfile(workspace, "Work");
+  assert.equal(signedInAs(work), "");
+  fs.writeFileSync(path.join(work.configDir!, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "work@example.com", accessToken: "never-read" } }));
+  fs.writeFileSync(path.join(root, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "me@example.com" } }));
+  assert.equal(signedInAs(work), "work@example.com");
+  assert.equal(signedInAs(workspace.profiles[0]), "me@example.com");
+  assert.equal(signedInAs(ws.addProfile(workspace, { name: "Offline", kind: "ollama", model: "m" })), "");
+});
