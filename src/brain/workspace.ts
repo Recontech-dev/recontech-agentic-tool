@@ -22,6 +22,8 @@ export interface Profile {
   kind?: "claude" | "ollama" | "free";
   /** The Ollama model, for an "ollama" profile. */
   model?: string;
+  /** The terminal's job in the workspace: "builder", "reviewer", "tester", or none. */
+  role?: string;
 }
 
 export interface NewProfile {
@@ -36,6 +38,11 @@ export interface Workspace {
   folder: string;
   profiles: Profile[];
   layout: "grid" | "tabs";
+  /** Project kit chosen by hand, per project folder. A folder without an entry uses the detected kit. */
+  kits?: Record<string, string>;
+  /** Terminal text size and the brain panel's width, as the user left them. */
+  fontSize?: number;
+  brainWidth?: number;
   /**
    * Whether the Free models terminal is kept in a container: its own empty folder, no project files,
    * no memory, no reading of other terminals. On unless the user turns it off.

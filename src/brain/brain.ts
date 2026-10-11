@@ -3,6 +3,7 @@
 import * as path from "node:path";
 
 import { Session, Source, refresh, sameFolder } from "./sessions";
+import { closeness } from "./meaning";
 import { Labels, isUnfinished, loadLabels, sessionKey } from "./sorting";
 import { Note, label, notes, score, tree, words } from "./store";
 
@@ -74,6 +75,46 @@ export class Brain {
     }
     found.sort((a, b) => b[0] - a[0] || b[1].when.localeCompare(a[1].when));
     return found.slice(0, limit).map(([, match]) => match);
+  }
+
+  /**
+   * Like search, but also by meaning when a local embedding model is available: a note about
+   * "deploy" is found by "how do we ship it". Falls back to matching words.
+   */
+  async searchSmart(query: string, limit = 10): Promise<{ matches: Match[]; byMeaning: boolean }> {
+    const candidates: Match[] = [];
+    for (const project of tree()) {
+      for (const note of project.notes) candidates.push({ kind: "note", project: project.name, folder: project.folder, text: note.text, when: note.time });
+    }
+    for (const session of this.sessions) {
+      candidates.push({
+        kind: "session", project: path.basename(session.folder), folder: session.folder,
+        text: `${this.describeLabels(session)}${session.title}. You asked: ${session.prompts.slice(0, 3).join(" / ")}`,
+        when: session.ended.slice(0, 16).replace("T", " "),
+      });
+    }
+    const near = await closeness(query, candidates.map((c) => c.text.slice(0, 600)));
+    if (!near) return { matches: this.search(query, limit), byMeaning: false };
+    const ranked = candidates
+      .map((match, i) => ({ match, total: near[i] + 0.08 * score(query, match.text), near: near[i], words: score(query, match.text) }))
+      // Clearly related by meaning, or sharing a word with the question.
+      .filter((r) => r.near >= 0.55 || r.words > 0)
+      .sort((a, b) => b.total - a.total);
+    return { matches: ranked.slice(0, limit).map((r) => r.match), byMeaning: true };
+  }
+
+  /** Sessions that Smart sorting judged unfinished, the given project's first, newest first. */
+  unfinished(folder = ""): { title: string; project: string; folder: string; profile: string; id: string; ended: string; type: string; here: boolean }[] {
+    return this.sessions
+      .filter((s) => {
+        const labels = this.labels[sessionKey(s)];
+        return labels && labels.modified === s.modified && isUnfinished(labels);
+      })
+      .map((s) => ({
+        title: s.title, project: path.basename(s.folder), folder: s.folder, profile: s.profile, id: s.id,
+        ended: s.ended, type: this.labels[sessionKey(s)].type, here: !!folder && sameFolder(s.folder, folder),
+      }))
+      .sort((a, b) => Number(b.here) - Number(a.here) || b.ended.localeCompare(a.ended));
   }
 
   /** "[bug fix, unfinished] " when Smart sorting has labelled the session, otherwise nothing. */

@@ -71,7 +71,15 @@ export function notes(folder: string): Note[] {
   return readNotes(path.join(projectDir(folder), "notes.jsonl"));
 }
 
+/** A note's text reduced to what matters for spotting a repeat: case, spacing and end punctuation ignored. */
+export function normalise(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").replace(/[.!?;,\s]+$/g, "").trim();
+}
+
 export function addNote(folder: string, text: string, source: string): string {
+  // Saving the same fact twice would only crowd the memory, so a repeat is not added again.
+  const same = notes(folder).find((n) => normalise(n.text) === normalise(redact(text.trim())));
+  if (same) return same.text;
   const dir = projectDir(folder);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "project.json"), JSON.stringify({ folder: realFolder(folder) }), "utf8");

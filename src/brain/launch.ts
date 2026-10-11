@@ -41,7 +41,7 @@ export function profileEnv(profile: Profile, base: NodeJS.ProcessEnv, bridge?: {
 export const CONTAINED_OFF = ["SendMessage", "ListAgents", "WebSearch", "DesignSync", "Skill"];
 
 /** The command typed into a profile's terminal to start Claude Code. */
-export function claudeCommand(profile: Profile, mcpConfig: string, resume?: string, contained = false): string {
+export function claudeCommand(profile: Profile, mcpConfig: string, resume?: string, contained = false, standing = ""): string {
   const quote = process.platform === "win32" ? (s: string) => `'${s.replace(/'/g, "''")}'` : (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const parts = ["claude"];
   if (profile.kind === "ollama" && profile.model) parts.push("--model", quote(profile.model));
@@ -53,6 +53,9 @@ export function claudeCommand(profile: Profile, mcpConfig: string, resume?: stri
   // only way out of the container is the app's message_terminal.
   if (contained) parts.push("--restricted", "--strict-mcp-config", "--disallowedTools", quote(CONTAINED_OFF.join(",")));
   if (resume && /^[\w-]+$/.test(resume)) parts.push("--resume", resume);
+  // Standing instructions (project kit and terminal role), kept to one line with plain quotes.
+  const extra = standing.replace(/[\r\n]+/g, " ").replace(/["`$]/g, "").trim();
+  if (extra) parts.push("--append-system-prompt", quote(extra));
   parts.push("--mcp-config", quote(mcpConfig));
   return parts.join(" ");
 }
