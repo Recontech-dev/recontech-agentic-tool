@@ -60,7 +60,7 @@ export const ROLES: Role[] = [
     id: "builder",
     name: "Builder",
     prompt:
-      "Your role in this workspace is Builder: you write and change the code. Make the smallest change that does the job and run the project's tests or checks. " +
+      "Your role in this workspace is Builder: you write and change the code. Make the smallest change that does the job and run the tests or checks of the project. " +
       "When a piece of work is ready, use list_terminals to find a Reviewer or Tester terminal and send it a short message with what changed and which files, asking for its findings; then fix what it reports.",
   },
   {
