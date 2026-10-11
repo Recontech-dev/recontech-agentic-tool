@@ -34,6 +34,7 @@
   #work.tabs .panel:not(.active) { display:none; }
   .panel { min-width:0; min-height:0; display:flex; flex-direction:column; background:#000; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
   .panel[hidden] { display:none; }
+  .panel.messaged { border-color:var(--topic); box-shadow:0 0 0 1px var(--topic); }
   .bar { display:flex; align-items:center; gap:8px; padding:4px 8px; background:#0d1015; border-bottom:1px solid var(--line); color:var(--dim); }
   .bar .dot { width:9px; height:9px; border-radius:50%; flex:none; }
   .bar .name { color:var(--text); font-weight:600; white-space:nowrap; }

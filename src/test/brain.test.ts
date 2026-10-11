@@ -143,7 +143,7 @@ test("the MCP server answers like Claude Code expects and shares the brain", asy
   assert.match(init.result.instructions, /long-term memory/);
   send({ jsonrpc: "2.0", method: "notifications/initialized" });
   send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-  assert.deepEqual((await waitFor(2)).result.tools.map((t: any) => t.name), ["remember", "recall", "project_memory", "forget"]);
+  assert.deepEqual((await waitFor(2)).result.tools.map((t: any) => t.name), ["remember", "recall", "project_memory", "forget", "list_terminals", "read_terminal", "message_terminal"]);
   send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "remember", arguments: { note: "Payments use Stripe test mode" } } });
   assert.match((await waitFor(3)).result.content[0].text, /Remembered/);
   send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "recall", arguments: { query: "stripe" } } });

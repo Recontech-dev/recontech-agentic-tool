@@ -13,6 +13,7 @@ import { home } from "../brain/paths";
 import { sameFolder } from "../brain/sessions";
 import { bundleReady } from "../brain/sorting";
 import * as ws from "../brain/workspace";
+import { Control } from "./control";
 import { FreeModels } from "./free";
 
 const BRAIN_REFRESH_MS = 10_000;
@@ -35,20 +36,46 @@ let sorter: ChildProcess | null = null;
 const free = new FreeModels(() => send("free:status", free.proxy.status()));
 let sortingStatus: Record<string, unknown> = { status: "off" };
 
-/** The MCP config every Claude Code session is started with, so all of them share the brain. */
-function mcpConfigFile(): string {
+const controlFile = () => path.join(home(), "brain", "control.json");
+
+/**
+ * The MCP config a Claude Code session is started with, so every session shares the brain.
+ * With a profile, the config also tells the brain which terminal it serves, so terminals can
+ * message each other. Without one it writes the general file for sessions started by hand.
+ */
+function mcpConfigFile(profile?: ws.Profile): string {
   // Inside the installed app the scripts are unpacked next to the archive, where a plain Node process can run them.
   const server = path.join(__dirname, "..", "mcp", "server.js").replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
-  const file = path.join(home(), "brain", "mcp.json");
-  const config = {
-    mcpServers: {
-      brain: { command: process.execPath, args: [server], env: { ELECTRON_RUN_AS_NODE: "1", ALT_HOME: home() } },
-    },
-  };
+  const file = path.join(home(), "brain", profile ? `mcp-${profile.id}.json` : "mcp.json");
+  const env: Record<string, string> = { ELECTRON_RUN_AS_NODE: "1", ALT_HOME: home() };
+  if (profile) {
+    env.ALT_PROFILE = profile.name;
+    env.ALT_CONTROL = controlFile();
+  }
+  const config = { mcpServers: { brain: { command: process.execPath, args: [server], env } } };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(config, null, 2), "utf8");
   return file;
 }
+
+/** The link that lets one terminal's Claude Code list, read and message the others. */
+const control = new Control({
+  terminals: () => workspace.profiles.map((p) => ({ name: p.name, kind: p.kind ?? "claude", running: terminals.has(p.id) })),
+  read: async (name, lines) => {
+    const profile = workspace.profiles.find((p) => p.name === name);
+    if (!profile || !win || win.isDestroyed()) return "";
+    return win.webContents.executeJavaScript(`terminalText(${JSON.stringify(profile.id)}, ${Number(lines) || 60})`);
+  },
+  deliver: (name, text) => {
+    const profile = workspace.profiles.find((p) => p.name === name);
+    const term = profile && terminals.get(profile.id);
+    if (!term) return;
+    // Sent as a paste so line breaks stay inside the message, then Enter to submit it.
+    term.write(`\x1b[200~${text.replace(/\x1b/g, "")}\x1b[201~`);
+    setTimeout(() => terminals.get(profile.id) === term && term.write("\r"), 400);
+    send("term:message", profile.id);
+  },
+});
 
 function shellCommand(): { file: string; args: string[] } {
   if (process.platform === "win32") return { file: "powershell.exe", args: ["-NoLogo"] };
@@ -81,7 +108,7 @@ function startTerminal(id: string, options: { folder?: string; resume?: string }
     send("term:exit", id);
   });
   // ALT_NO_CLAUDE is for automated checks of the window: the shell opens but Claude Code is not started.
-  if (!process.env.ALT_NO_CLAUDE) term.write(claudeCommand(profile, mcpConfigFile(), options.resume) + "\r");
+  if (!process.env.ALT_NO_CLAUDE) term.write(claudeCommand(profile, mcpConfigFile(profile), options.resume) + "\r");
 }
 
 /** A script inside the installed app, at the path a plain Node process can run it from. */
@@ -315,6 +342,9 @@ ipcMain.on("term:resize", (_event, id: string, cols: number, rows: number) => {
 
 app.whenReady().then(async () => {
   await free.start();
+  await control.listen();
+  control.writeAddress(controlFile());
+  mcpConfigFile();
   createWindow();
   setInterval(pushGraph, BRAIN_REFRESH_MS);
   checkNetwork();

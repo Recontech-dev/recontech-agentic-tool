@@ -32,6 +32,7 @@ printf '#!/bin/sh\nnode scripts/check-secrets.mjs\n' > .git/hooks/pre-commit
 | `src/brain/launch.ts` | How each profile's Claude Code starts (sign-in or Ollama), internet and Ollama checks |
 | `src/brain/sorting.ts`, `src/brain/sorter.ts` | Smart sorting: the questions asked of Laya, and the background worker |
 | `src/proxy/translate.ts`, `src/proxy/server.ts` | Free models bridge: translates Claude Code's requests for OpenAI-compatible providers, with failover |
+| `src/main/control.ts` | The link that lets terminals list, read and message each other |
 | `src/main/free.ts` | Free models settings and encrypted API keys |
 | `src/mcp/server.ts` | The brain as an MCP server for Claude Code |
 | `src/test/` | Tests (`node --test`) |

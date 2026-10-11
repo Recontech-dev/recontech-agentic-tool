@@ -14,6 +14,7 @@ Agentic Lazy Tool puts your Claude Code terminals side by side in one window and
 - **Shared brain:** every terminal connects to the same local memory. A fact one session learns, the next session knows, across profiles and projects.
 - **Past sessions become memory:** the brain reads the sessions Claude Code saves on your disk and keeps each one's title, project, your prompts and its main topics, even after Claude Code's own files are gone.
 - **See your brain:** a live network beside the terminals shows your projects, past sessions (coloured by profile), notes and the topics that link them. It arranges itself so nothing overlaps and zooms to fit as it grows.
+- **Terminals that work together:** ask one terminal's Claude to read another terminal, hand it a task, or discuss an approach with it. For example: "ask the Work terminal to review this change and report back".
 - **Resume anything:** click a past session and press **Resume** to continue it in the right terminal and folder.
 - **Search everything:** find any earlier decision or session across all projects.
 - **Smart sorting (optional):** a local model labels every session as bug fix, feature, refactor, setup and deploy, tests, docs or question, and spots work that was left unfinished. Claude is told about unfinished work first, and the graph can show only unfinished sessions or one kind of work.
@@ -44,6 +45,20 @@ Windows may show "Windows protected your PC" because the app is new and not code
 An **Offline** badge appears in the top bar when Claude cannot be reached; Claude profiles then show "needs internet".
 
 Buttons: **↻** restarts a terminal, **✕** removes a profile (its sign-in and past sessions stay on disk), **Tabs/Grid** switches the layout, **Hide brain** gives the terminals the whole window.
+
+### Terminals working together
+
+Every terminal's Claude can see and reach the others in the window. Refer to a terminal by the name in its title bar:
+
+- "What is the Work terminal doing?" reads that terminal's screen.
+- "Ask Account 1 to review the login fix and tell me what it thinks" sends it a message. The message arrives there as a prompt, that Claude acts on it, and its answer comes back the same way. The receiving terminal's border lights up when a message arrives.
+- "Run the tests here, then discuss the failures with the Work terminal and agree on a fix" lets two sessions go back and forth.
+
+Things to know:
+
+- Both terminals must be started, and sessions that were already open before you updated the app must be restarted (↻) once to get this ability.
+- Every message uses Claude usage on both sides. One terminal can send another at most 12 messages per 15 minutes; after that it stops and asks you how to continue.
+- Everything they say to each other is visible in the terminals.
 
 ### About accounts
 

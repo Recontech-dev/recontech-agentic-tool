@@ -95,6 +95,21 @@ function makePanel(profile: Profile): void {
   }
 }
 
+/**
+ * The text on a terminal's screen, last `lines` lines. The app calls this when another terminal's
+ * Claude Code asks to read this one.
+ */
+function terminalText(id: string, lines: number): string {
+  const entry = terms.get(id);
+  if (!entry) return "";
+  const buffer = entry.term.buffer.active;
+  const rows: string[] = [];
+  for (let i = 0; i < buffer.length; i++) rows.push(buffer.getLine(i)?.translateToString(true) ?? "");
+  while (rows.length && !rows[rows.length - 1].trim()) rows.pop();
+  return rows.slice(-lines).join("\n");
+}
+(window as any).terminalText = terminalText;
+
 /** Start the free terminal (once) and bring it to the front. */
 function startFree(): void {
   const profile = workspace.profiles.find((p) => p.kind === "free");
@@ -211,6 +226,14 @@ $("foundDismiss").onclick = async () => {
 api.on("term:data", (id: string, data: string) => {
   terms.get(id)?.term.write(data);
   watchForLimit(id, data);
+});
+
+// A message from another terminal just arrived here: light the panel's border up for a moment.
+api.on("term:message", (id: string) => {
+  const panel = terms.get(id)?.panel;
+  if (!panel) return;
+  panel.classList.add("messaged");
+  setTimeout(() => panel.classList.remove("messaged"), 2500);
 });
 
 /* ---------- Limit reached: offer the free terminal ---------- */

@@ -7,7 +7,7 @@ const INVOKE = [
   "brain:search", "session:resume", "sorting:get", "sorting:toggle", "folders:unused", "folders:adopt", "folders:dismiss", "profile:accounts", "free:get", "free:save", "free:test",
 ];
 const SEND = ["term:start", "term:input", "term:resize"];
-const LISTEN = ["term:data", "term:exit", "brain:graph", "net:status", "sorting:status", "free:status"];
+const LISTEN = ["term:data", "term:exit", "term:message", "brain:graph", "net:status", "sorting:status", "free:status"];
 
 contextBridge.exposeInMainWorld("api", {
   invoke: (channel: string, ...args: unknown[]) =>
