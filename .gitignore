@@ -13,3 +13,5 @@ uv.lock
 .agentic-lazy-tool/
 build/
 *.spec
+node_modules/
+release/

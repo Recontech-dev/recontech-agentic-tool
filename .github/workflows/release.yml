@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a tag such as v0.2.0 runs the tests, builds AgenticLazyTool.exe and attaches it to a GitHub release.
+# Pushing a tag such as v0.3.0 runs the tests, builds the Windows installer and attaches it to a GitHub release.
 on:
   push:
     tags: ["v*"]
@@ -9,20 +9,20 @@ permissions:
   contents: write
 
 jobs:
-  windows-exe:
+  windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
-      - name: Install
-        run: python -m pip install . pytest pyinstaller
-      - name: Test
-        run: python -m pytest -q
-      - name: Build
-        run: python packaging/build_exe.py
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+      - run: npm run dist
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/AgenticLazyTool.exe --title "${{ github.ref_name }}" --generate-notes
+        shell: bash
+        run: |
+          cp release/AgenticLazyTool-Setup-*.exe AgenticLazyTool-Setup.exe
+          gh release create "${{ github.ref_name }}" AgenticLazyTool-Setup.exe --title "${{ github.ref_name }}" --generate-notes

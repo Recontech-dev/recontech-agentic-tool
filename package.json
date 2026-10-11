@@ -1,0 +1,38 @@
+{
+  "name": "agentic-lazy-tool",
+  "version": "0.3.0",
+  "description": "Claude Code workspace: several Claude Code profiles side by side, sharing one local brain built from your past sessions",
+  "license": "MIT",
+  "author": "Earl Batenga",
+  "homepage": "https://github.com/erlruben/agentic-lazy-tool",
+  "main": "dist/main/main.js",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "npm run build && node scripts/start.mjs",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "check-secrets": "node scripts/check-secrets.mjs --all",
+    "dist": "npm run build && electron-builder --win --publish never"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "io.github.erlruben.agentic-lazy-tool",
+    "productName": "Agentic Lazy Tool",
+    "directories": { "output": "release" },
+    "files": ["dist/**", "!dist/test/**", "static/**", "package.json"],
+    "asarUnpack": ["dist/brain/**", "dist/mcp/**"],
+    "win": { "target": "nsis", "artifactName": "AgenticLazyTool-Setup-${version}.exe" },
+    "nsis": { "oneClick": true, "perMachine": false },
+    "npmRebuild": false
+  }
+}

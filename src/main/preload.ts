@@ -1,0 +1,18 @@
+// The only bridge between the page and the main process: a fixed list of channels.
+
+import { contextBridge, ipcRenderer } from "electron";
+
+const INVOKE = ["workspace:get", "workspace:choose-folder", "workspace:layout", "profile:add", "profile:remove", "brain:search"];
+const SEND = ["term:start", "term:input", "term:resize"];
+const LISTEN = ["term:data", "term:exit", "brain:graph"];
+
+contextBridge.exposeInMainWorld("api", {
+  invoke: (channel: string, ...args: unknown[]) =>
+    INVOKE.includes(channel) ? ipcRenderer.invoke(channel, ...args) : Promise.reject(new Error(`blocked: ${channel}`)),
+  send: (channel: string, ...args: unknown[]) => {
+    if (SEND.includes(channel)) ipcRenderer.send(channel, ...args);
+  },
+  on: (channel: string, listener: (...args: unknown[]) => void) => {
+    if (LISTEN.includes(channel)) ipcRenderer.on(channel, (_event, ...args) => listener(...args));
+  },
+});

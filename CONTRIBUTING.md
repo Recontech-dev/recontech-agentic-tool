@@ -7,32 +7,39 @@ Contributions are welcome. The project is MIT licensed (see [LICENSE](LICENSE)),
 ```
 git clone https://github.com/erlruben/agentic-lazy-tool
 cd agentic-lazy-tool
-python -m pip install -e . pytest
-python scripts/install_hook.py
-python -m pytest -q
+npm install
+npm test
+npm start
 ```
 
-The hook stops a commit that contains an API key or a personal data file. Run the tool with `alt` (terminal) or `alt --app` (window with the memory graph).
+Install the secret check as a pre-commit hook once:
+
+```
+printf '#!/bin/sh\nnode scripts/check-secrets.mjs\n' > .git/hooks/pre-commit
+```
 
 ## Where things are
 
 | File | What it does |
 |---|---|
-| `src/agentic_lazy_tool/cli.py` | Terminal app and every slash command |
-| `src/agentic_lazy_tool/chain.py` | Failover between profiles, cooldowns, trimming long conversations |
-| `src/agentic_lazy_tool/providers.py` | Claude adapter and the OpenAI-compatible adapter; add providers to `PRESETS` |
-| `src/agentic_lazy_tool/memory.py` | Project memory, topics and search |
-| `src/agentic_lazy_tool/tasks.py` | Task detection rules |
-| `src/agentic_lazy_tool/gateway.py` | Local OpenAI-compatible gateway and its dashboard |
-| `src/agentic_lazy_tool/webapp.py`, `webui.py` | Window app: local server and the page with the memory graph |
-| `packaging/build_exe.py` | Builds `dist/AgenticLazyTool.exe` |
+| `src/main/main.ts` | Electron main process: window, terminals (node-pty), brain refresh |
+| `src/main/preload.ts` | The fixed list of channels the page may use |
+| `src/renderer/renderer.ts`, `static/index.html` | The window: terminals (xterm.js), brain search and graph |
+| `src/brain/store.ts` | Notes per project, word helpers |
+| `src/brain/sessions.ts` | Reads Claude Code session transcripts into the session index |
+| `src/brain/brain.ts` | Search, project summary and the graph |
+| `src/brain/workspace.ts` | Profiles and the project folder |
+| `src/mcp/server.ts` | The brain as an MCP server for Claude Code |
+| `src/test/` | Tests (`node --test`) |
+| `legacy/` | The earlier Python tool, unmaintained |
 
 ## Rules
 
-- Never commit keys, `.env` files, or anything from `~/.agentic-lazy-tool/` (conversations, memory).
-- Add or update a test in `tests/` with each change. Tests must not call real AI providers.
+- Never commit keys, `.env` files, or anything from `~/.agentic-lazy-tool/` or a Claude Code config folder.
+- Add or update a test with each change. Tests must not read the real sessions on your machine; set `ALT_HOME` and `ALT_CLAUDE_HOME` to temporary folders as the existing tests do.
+- The app must never read, store or send Claude sign-in credentials. Claude Code handles sign-in.
 - Keep pull requests to one change each and describe what you tested.
 
 ## Releasing (maintainers)
 
-Push a version tag, for example `git tag v0.2.0 && git push origin v0.2.0`. GitHub Actions runs the tests, builds `AgenticLazyTool.exe` and attaches it to a new release.
+Update `version` in `package.json`, then push a tag, for example `git tag v0.3.0 && git push origin v0.3.0`. GitHub Actions runs the tests, builds the installer and attaches it to a new release.

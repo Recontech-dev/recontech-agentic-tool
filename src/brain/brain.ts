@@ -1,0 +1,144 @@
+// The brain: notes and past sessions together, searchable and drawn as a network.
+
+import * as path from "node:path";
+
+import { Session, Source, refresh, sameFolder } from "./sessions";
+import { Note, label, notes, score, tree, words } from "./store";
+
+export interface Node {
+  id: string;
+  kind: "project" | "note" | "session" | "topic";
+  label: string;
+  text: string;
+  detail: string;
+  open: boolean;
+}
+
+export interface Link {
+  source: string;
+  target: string;
+}
+
+export interface Match {
+  kind: "note" | "session";
+  project: string;
+  folder: string;
+  text: string;
+  when: string;
+}
+
+const SESSIONS_PER_PROJECT = 12;
+const MAX_TOPICS = 30;
+const ACTIVE_MS = 10 * 60 * 1000;
+
+export class Brain {
+  sessions: Session[] = [];
+
+  constructor(public sources: () => Source[]) {}
+
+  /** Read new transcripts. Returns true when something changed. */
+  update(): boolean {
+    const result = refresh(this.sources());
+    this.sessions = result.sessions;
+    return result.changed;
+  }
+
+  search(query: string, limit = 10): Match[] {
+    const found: [number, Match][] = [];
+    for (const project of tree()) {
+      for (const note of project.notes) {
+        const points = score(query, note.text);
+        if (points) found.push([points, { kind: "note", project: project.name, folder: project.folder, text: note.text, when: note.time }]);
+      }
+    }
+    for (const session of this.sessions) {
+      const points = score(query, [session.title, ...session.prompts, ...session.keywords].join(" "));
+      if (points) {
+        found.push([points, {
+          kind: "session", project: path.basename(session.folder), folder: session.folder,
+          text: `${session.title}. You asked: ${session.prompts.slice(0, 3).join(" / ")}`, when: session.ended.slice(0, 16).replace("T", " "),
+        }]);
+      }
+    }
+    found.sort((a, b) => b[0] - a[0] || b[1].when.localeCompare(a[1].when));
+    return found.slice(0, limit).map(([, match]) => match);
+  }
+
+  /** Everything the brain holds about one project, as text for a model to read. */
+  projectSummary(folder: string): string {
+    const kept: Note[] = notes(folder);
+    const past = this.sessions.filter((s) => sameFolder(s.folder, folder)).slice(0, 8);
+    const lines = [`Project: ${folder}`];
+    lines.push(kept.length ? "Notes:" : "No notes saved yet.");
+    kept.forEach((note, i) => lines.push(`  ${i + 1}. (${note.time.slice(0, 10)}) ${note.text}`));
+    if (past.length) {
+      lines.push("Recent sessions:");
+      for (const s of past) {
+        lines.push(`  - ${s.ended.slice(0, 10)} "${s.title}" (${s.profile}). Asked: ${s.prompts.slice(0, 3).join(" / ")}`);
+      }
+    }
+    return lines.join("\n");
+  }
+
+  graph(currentFolder: string): { nodes: Node[]; links: Link[] } {
+    const nodes: Node[] = [];
+    const links: Link[] = [];
+    const projects = new Map<string, string>();
+    const projectNode = (folder: string): string => {
+      const key = folder.replace(/[\\/]+$/, "").toLowerCase();
+      if (!projects.has(key)) {
+        const id = `p${projects.size}`;
+        projects.set(key, id);
+        nodes.push({
+          id, kind: "project", label: path.basename(folder) || folder, text: folder, detail: "project",
+          open: !!currentFolder && sameFolder(folder, currentFolder),
+        });
+      }
+      return projects.get(key)!;
+    };
+    const topicWords = new Map<string, string[]>();
+    const addWords = (id: string, list: string[]) => {
+      for (const word of new Set(list)) topicWords.set(word, [...(topicWords.get(word) ?? []), id]);
+    };
+
+    for (const project of tree()) {
+      const parent = projectNode(project.folder);
+      project.notes.forEach((note, n) => {
+        const id = `${parent}n${n}`;
+        nodes.push({
+          id, kind: "note", label: label(note.text), text: note.text, detail: `note · ${project.name} · ${note.time}`,
+          open: nodes.find((x) => x.id === parent)!.open,
+        });
+        links.push({ source: parent, target: id });
+        addWords(id, words(note.text).slice(0, 6));
+      });
+    }
+
+    const perProject = new Map<string, number>();
+    const now = Date.now();
+    for (const session of this.sessions) {
+      const parent = projectNode(session.folder);
+      const count = perProject.get(parent) ?? 0;
+      if (count >= SESSIONS_PER_PROJECT) continue;
+      perProject.set(parent, count + 1);
+      const id = `s:${session.profile}:${session.id}`;
+      nodes.push({
+        id, kind: "session", label: label(session.title), text: session.title,
+        detail: `session · ${session.profile} · ${session.ended.slice(0, 16).replace("T", " ")} · ${session.prompts.length} prompts`,
+        open: now - session.modified < ACTIVE_MS,
+      });
+      links.push({ source: parent, target: id });
+      addWords(id, session.keywords.slice(0, 5));
+    }
+
+    const shared = [...topicWords.entries()]
+      .filter(([, ids]) => ids.length >= 2)
+      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+      .slice(0, MAX_TOPICS);
+    for (const [word, ids] of shared) {
+      nodes.push({ id: `t:${word}`, kind: "topic", label: word, text: word, detail: `shared by ${ids.length} notes and sessions`, open: false });
+      for (const id of ids) links.push({ source: `t:${word}`, target: id });
+    }
+    return { nodes, links };
+  }
+}
