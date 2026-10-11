@@ -12,6 +12,7 @@ import * as meaning from "../brain/meaning";
 import { SHARE_FILE, exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
 import * as sorting from "../brain/sorting";
 import { addNote, notes } from "../brain/store";
+import { newer } from "../brain/version";
 import * as ws from "../brain/workspace";
 
 let root = "";
@@ -145,4 +146,12 @@ test("unfinished work is listed with the open project first", () => {
   sorting.saveLabels(labels);
   brain.update();
   assert.deepEqual(brain.unfinished(shop).map((u) => `${u.title}:${u.here}`), ["Cart total:true", "Blog comments:false"]);
+});
+
+test("a newer release is recognised by its version number", () => {
+  assert.equal(newer("v0.10.0", "0.9.1"), true);
+  assert.equal(newer("0.5.0", "0.5.0"), false);
+  assert.equal(newer("0.4.9", "0.5.0"), false);
+  assert.equal(newer("1.0.0", "0.99.99"), true);
+  assert.equal(newer("garbage", "0.5.0"), false);
 });

@@ -124,7 +124,7 @@ async function runTool(name: string, args: any): Promise<string> {
     }
     case "recall": {
       brain.update();
-      const matches = brain.search(String(args?.query ?? ""));
+      const { matches } = await brain.searchSmart(String(args?.query ?? ""));
       if (!matches.length) return "Nothing in memory matches.";
       return matches.map((m) => `- [${m.kind}] ${m.project} (${m.when}): ${m.text}`).join("\n");
     }
@@ -138,7 +138,7 @@ async function runTool(name: string, args: any): Promise<string> {
     case "list_terminals": {
       const { terminals } = await control("/terminals", {});
       return terminals
-        .map((t: any) => `- ${t.name}${t.name === SELF ? " (this terminal)" : ""}: ${t.kind}, ${t.running ? "running" : "not started"}`)
+        .map((t: any) => `- ${t.name}${t.name === SELF ? " (this terminal)" : ""}: ${t.role ? `${t.role}, ` : ""}${t.kind}, ${t.running ? "running" : "not started"}`)
         .join("\n");
     }
     case "read_terminal": {
@@ -163,7 +163,7 @@ async function handle(message: any): Promise<object | null> {
       return reply({
         protocolVersion: params?.protocolVersion ?? PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "agentic-lazy-tool-brain", version: "0.4.0" },
+        serverInfo: { name: "agentic-lazy-tool-brain", version: "0.5.0" },
         instructions: CONTAINED ? CONTAINED_INSTRUCTIONS + (SELF ? ` This terminal is called "${SELF}".` : "") : INSTRUCTIONS,
       });
     case "ping":

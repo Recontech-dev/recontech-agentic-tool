@@ -1,6 +1,6 @@
 // The Electron main process: one window with a terminal per Claude Code profile and the brain beside them.
 
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -8,10 +8,14 @@ import * as pty from "node-pty";
 import { ChildProcess, spawn } from "node:child_process";
 
 import { Brain } from "../brain/brain";
+import { KITS, ROLES, detectKit, kitById, roleById, standingPrompt } from "../brain/kits";
 import { claudeCommand, ollamaModels, online, profileEnv, signedInAs } from "../brain/launch";
+import { exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
+import { addNote, removeNote } from "../brain/store";
 import { containerDir, home } from "../brain/paths";
 import { sameFolder } from "../brain/sessions";
 import { bundleReady } from "../brain/sorting";
+import { newer } from "../brain/version";
 import * as ws from "../brain/workspace";
 import { Control } from "./control";
 import { FreeModels } from "./free";
@@ -61,7 +65,9 @@ function mcpConfigFile(profile?: ws.Profile): string {
 
 /** The link that lets one terminal's Claude Code list, read and message the others. */
 const control = new Control({
-  terminals: () => workspace.profiles.map((p) => ({ name: p.name, kind: p.kind ?? "claude", running: terminals.has(p.id) })),
+  terminals: () => workspace.profiles.map((p) => ({
+    name: p.name, kind: p.kind ?? "claude", running: terminals.has(p.id), role: p.role ? roleById(p.role).name : undefined,
+  })),
   read: async (name, lines) => {
     const profile = workspace.profiles.find((p) => p.name === name);
     if (!profile || !win || win.isDestroyed()) return "";
@@ -113,7 +119,10 @@ function startTerminal(id: string, options: { folder?: string; resume?: string }
     send("term:exit", id);
   });
   // ALT_NO_CLAUDE is for automated checks of the window: the shell opens but Claude Code is not started.
-  if (!process.env.ALT_NO_CLAUDE) term.write(claudeCommand(profile, mcpConfigFile(profile), options.resume, contained) + "\r");
+  // A contained terminal has no project, so it gets no project kit; every other terminal gets the
+  // kit of the folder it works in and the role the user gave it.
+  const standing = contained ? "" : standingPrompt(currentKit(folder), profile.role);
+  if (!process.env.ALT_NO_CLAUDE) term.write(claudeCommand(profile, mcpConfigFile(profile), options.resume, contained, standing) + "\r");
 }
 
 /** A script inside the installed app, at the path a plain Node process can run it from. */
@@ -201,6 +210,26 @@ async function toggleSorting(): Promise<Record<string, unknown>> {
   setSortingStatus({ status: "starting" });
   startSorter();
   return sortingStatus;
+}
+
+/** The project kit for a folder: the user's choice if they made one, otherwise what the files suggest. */
+function currentKit(folder: string): string {
+  return workspace.kits?.[folder.toLowerCase()] ?? detectKit(folder);
+}
+
+const RELEASES_API = "https://api.github.com/repos/erlruben/agentic-lazy-tool/releases/latest";
+const RELEASES_PAGE = "https://github.com/erlruben/agentic-lazy-tool/releases/latest";
+
+/** Ask GitHub for the newest release. Only the version number is read; nothing about the user is sent. */
+async function checkForUpdate(): Promise<{ current: string; latest: string } | null> {
+  try {
+    const response = await fetch(RELEASES_API, { headers: { accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(8000) });
+    if (!response.ok) return null;
+    const latest = String(((await response.json()) as { tag_name?: string }).tag_name ?? "");
+    return latest && newer(latest, app.getVersion()) ? { current: app.getVersion(), latest: latest.replace(/^v/, "") } : null;
+  } catch {
+    return null;
+  }
 }
 
 function pushGraph(force = false): void {
@@ -314,7 +343,70 @@ ipcMain.handle("profile:remove", (_event, id: string) =>
     return workspace;
   }),
 );
-ipcMain.handle("brain:search", (_event, query: string) => brain.search(String(query), 20));
+ipcMain.handle("brain:search", (_event, query: string) => brain.searchSmart(String(query), 20));
+ipcMain.handle("brain:unfinished", () => brain.unfinished(workspace.folder));
+ipcMain.handle("note:add", (_event, text: string) =>
+  result(() => {
+    if (!workspace.folder) throw new Error("Choose a project folder first.");
+    if (!String(text ?? "").trim()) throw new Error("Type the note first.");
+    const saved = addNote(workspace.folder, String(text), "manual");
+    pushGraph(true);
+    return { saved };
+  }),
+);
+ipcMain.handle("note:remove", (_event, ref: { folder: string; number: number }) =>
+  result(() => {
+    const removed = removeNote(String(ref?.folder), Number(ref?.number));
+    pushGraph(true);
+    return { removed: !!removed };
+  }),
+);
+ipcMain.handle("share:info", () => {
+  if (!workspace.folder) return { folder: "" };
+  const shared = readShared(workspace.folder);
+  return { folder: workspace.folder, exists: !!shared, exported: shared?.exported ?? "", sharedNotes: shared?.notes.length ?? 0, newNotes: newSharedNotes(workspace.folder).length };
+});
+ipcMain.handle("share:export", () =>
+  result(() => {
+    if (!workspace.folder) throw new Error("Choose a project folder first.");
+    const open = brain.unfinished(workspace.folder).filter((u) => u.here).map((u) => ({ title: u.title, ended: u.ended }));
+    return { notes: exportProject(workspace.folder, open) };
+  }),
+);
+ipcMain.handle("share:import", () =>
+  result(() => {
+    const added = importProject(workspace.folder);
+    pushGraph(true);
+    return { added };
+  }),
+);
+ipcMain.handle("kit:get", () => {
+  const detected = workspace.folder ? detectKit(workspace.folder) : "none";
+  const chosen = workspace.folder ? currentKit(workspace.folder) : "none";
+  return { kits: KITS.map((k) => ({ id: k.id, name: k.name })), roles: ROLES.map((r) => ({ id: r.id, name: r.name })), kit: chosen, detected: kitById(detected).name };
+});
+ipcMain.handle("kit:set", (_event, id: string) => {
+  if (!workspace.folder) return workspace;
+  workspace.kits = { ...(workspace.kits ?? {}), [workspace.folder.toLowerCase()]: kitById(String(id)).id };
+  ws.save(workspace);
+  return workspace;
+});
+ipcMain.handle("profile:role", (_event, id: string, role: string) => {
+  const profile = workspace.profiles.find((p) => p.id === id);
+  if (profile) {
+    profile.role = roleById(String(role)).id || undefined;
+    ws.save(workspace);
+  }
+  return workspace;
+});
+ipcMain.handle("ui:save", (_event, ui: { fontSize?: number; brainWidth?: number }) => {
+  if (Number(ui?.fontSize) >= 9 && Number(ui?.fontSize) <= 24) workspace.fontSize = Number(ui.fontSize);
+  if (Number(ui?.brainWidth) >= 240 && Number(ui?.brainWidth) <= 1200) workspace.brainWidth = Math.round(Number(ui.brainWidth));
+  ws.save(workspace);
+});
+ipcMain.handle("update:check", () => checkForUpdate());
+// Only ever opens the app's own releases page, never an address the page supplies.
+ipcMain.handle("update:open", () => shell.openExternal(RELEASES_PAGE));
 ipcMain.handle("free:get", () => ({
   ...free.describe(), enabled: workspace.profiles.some((p) => p.kind === "free"), contained: workspace.freeContained !== false,
 }));

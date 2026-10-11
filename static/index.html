@@ -82,6 +82,22 @@
   .good { color:var(--open); } .bad { color:#ff7b7b; }
   .privacy { border:1px solid var(--topic); border-radius:6px; padding:8px 10px; }
   .provider .policy { grid-column:1 / -1; font-size:12px; color:var(--topic); }
+  .bar-note { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#1f2a3a; border-bottom:1px solid var(--line); }
+  .bar-note[hidden] { display:none; }
+  select.small { font:inherit; font-size:12px; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:2px 4px; max-width:110px; }
+  #kit { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 6px; }
+  #divider { width:5px; cursor:col-resize; background:transparent; flex:none; }
+  #divider:hover, #divider.dragging { background:var(--accent); }
+  #todo { margin:0 8px 6px; border:1px solid var(--line); border-radius:6px; max-height:32%; overflow:auto; }
+  #todo[hidden] { display:none; }
+  #todo summary { padding:6px 8px; cursor:pointer; color:var(--topic); }
+  .todo-item { display:flex; gap:8px; align-items:center; padding:5px 8px; border-top:1px solid var(--line); }
+  .todo-item .what { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #noteRow { display:flex; gap:8px; padding:6px 8px; border-top:1px solid var(--line); }
+  #noteText { flex:1; min-width:0; }
+  #shareDialog { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:20; }
+  #shareDialog[hidden] { display:none; }
+  #shareDialog > div { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; width:min(520px, calc(100% - 32px)); display:flex; flex-direction:column; gap:10px; }
   #found { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#1f2a3a; border-bottom:1px solid var(--line); }
   #found[hidden] { display:none; }
   #needFolder { grid-column:1 / -1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
@@ -100,13 +116,29 @@
 <header>
   <strong>Agentic Lazy Tool</strong>
   <button id="folder" title="Folder every terminal starts in">Choose project folder</button>
+  <select id="kit" title="Project kit: standing instructions for this kind of project, given to Claude Code when a terminal starts"></select>
   <span id="net" hidden title="Claude cannot be reached. Profiles that run on Ollama keep working.">Offline</span>
   <span class="spacer"></span>
+  <button id="share" title="Share this project's memory with teammates through a file in the project">Team</button>
+  <button id="smaller" class="icon" title="Smaller terminal text">A−</button>
+  <button id="bigger" class="icon" title="Larger terminal text">A+</button>
   <button id="free" title="A special terminal that runs Claude Code on free AI providers, for when a Claude limit is hit">Free models</button>
   <button id="add">+ Profile</button>
   <button id="layout">Tabs</button>
   <button id="toggle">Hide brain</button>
 </header>
+<div id="update" class="bar-note" hidden>
+  <span id="updateText"></span>
+  <span class="spacer"></span>
+  <button id="updateGo">Open the download page</button>
+  <button id="updateClose">Later</button>
+</div>
+<div id="shared" class="bar-note" hidden>
+  <span id="sharedText"></span>
+  <span class="spacer"></span>
+  <button id="sharedGo">Import</button>
+  <button id="sharedClose">Not now</button>
+</div>
 <div id="limit" hidden>
   <span id="limitText"></span>
   <span class="spacer"></span>
@@ -124,6 +156,7 @@
     <div id="tabs"></div>
     <div id="panels"></div>
   </section>
+  <div id="divider" title="Drag to resize"></div>
   <section id="brain">
     <div id="brainbar">
       <input id="search" placeholder="Search notes and past sessions" spellcheck="false">
@@ -132,6 +165,7 @@
     </div>
     <div id="sortingState"></div>
     <div id="results"></div>
+    <details id="todo" hidden><summary id="todoTitle"></summary><div id="todoList"></div></details>
     <canvas id="map"></canvas>
     <div id="legend">
       <span style="--c:var(--project)">project</span>
@@ -140,6 +174,10 @@
       <span style="--c:var(--topic)">shared topic</span>
       <span style="--c:var(--open)">open now</span>
       <span class="ring">unfinished</span>
+    </div>
+    <div id="noteRow">
+      <input id="noteText" placeholder="Add a note about this project" maxlength="500" spellcheck="false">
+      <button id="noteAdd">Add note</button>
     </div>
     <div id="detail" class="dim">Your brain grows as you work: every Claude Code session and every note appears here. Point at a circle to read it.</div>
   </section>
@@ -160,6 +198,18 @@
     <div id="error"></div>
     <div class="row"><button type="button" id="cancel">Cancel</button><button type="submit">Add</button></div>
   </form>
+</div>
+<div id="shareDialog" hidden>
+  <div>
+    <strong>Team memory</strong>
+    <div class="dim">Share what the brain knows about this project with your teammates. <b>Write the share file</b> saves this project's notes and the titles of unfinished work to <code>.alt-brain.json</code> in the project folder. Commit that file with the project; a teammate who opens the project in this app is offered the notes. Conversations and prompts are never included, and secrets are masked.</div>
+    <div id="shareInfo"></div>
+    <div style="display:flex; gap:8px; justify-content:flex-end">
+      <button id="shareImport">Import new notes</button>
+      <button id="shareExport">Write the share file</button>
+      <button id="shareClose">Close</button>
+    </div>
+  </div>
 </div>
 <div id="freeDialog" hidden>
   <form id="freeForm">

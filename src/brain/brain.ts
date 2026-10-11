@@ -20,6 +20,8 @@ export interface Node {
   /** From Smart sorting, when it is on: the kind of work, and whether it was left unfinished. */
   tag?: string;
   unfinished?: boolean;
+  /** For notes: where the note lives, so it can be deleted from the picture. */
+  note?: { folder: string; number: number };
 }
 
 export interface Link {
@@ -38,6 +40,8 @@ export interface Match {
 const SESSIONS_PER_PROJECT = 12;
 const MAX_TOPICS = 30;
 const ACTIVE_MS = 10 * 60 * 1000;
+const MEANING_FLOOR = 0.46;
+const MEANING_BAND = 0.08;
 
 export class Brain {
   sessions: Session[] = [];
@@ -86,19 +90,24 @@ export class Brain {
     for (const project of tree()) {
       for (const note of project.notes) candidates.push({ kind: "note", project: project.name, folder: project.folder, text: note.text, when: note.time });
     }
+    // What is compared by meaning: the subject only, without the sorting labels shown to the reader.
+    const subjects: string[] = candidates.map((c) => c.text);
     for (const session of this.sessions) {
+      const subject = `${session.title}. You asked: ${session.prompts.slice(0, 3).join(" / ")}`;
       candidates.push({
         kind: "session", project: path.basename(session.folder), folder: session.folder,
-        text: `${this.describeLabels(session)}${session.title}. You asked: ${session.prompts.slice(0, 3).join(" / ")}`,
-        when: session.ended.slice(0, 16).replace("T", " "),
+        text: this.describeLabels(session) + subject, when: session.ended.slice(0, 16).replace("T", " "),
       });
+      subjects.push(subject);
     }
-    const near = await closeness(query, candidates.map((c) => c.text.slice(0, 600)));
+    const near = await closeness(query, subjects.map((s) => s.slice(0, 600)));
     if (!near) return { matches: this.search(query, limit), byMeaning: false };
+    const best = Math.max(0, ...near);
     const ranked = candidates
-      .map((match, i) => ({ match, total: near[i] + 0.08 * score(query, match.text), near: near[i], words: score(query, match.text) }))
-      // Clearly related by meaning, or sharing a word with the question.
-      .filter((r) => r.near >= 0.55 || r.words > 0)
+      .map((match, i) => ({ match, total: near[i] + 0.08 * score(query, subjects[i]), near: near[i], words: score(query, subjects[i]) }))
+      // Related by meaning (measured with the nomic-embed-text model: unrelated text scores up to about
+      // 0.44, related text from about 0.48) and close to the best match, or sharing a real word.
+      .filter((r) => (r.near >= MEANING_FLOOR && r.near >= best - MEANING_BAND) || r.words > 0)
       .sort((a, b) => b.total - a.total);
     return { matches: ranked.slice(0, limit).map((r) => r.match), byMeaning: true };
   }
@@ -174,6 +183,7 @@ export class Brain {
         nodes.push({
           id, kind: "note", label: label(note.text), text: note.text, detail: `note · ${project.name} · ${note.time}`,
           open: nodes.find((x) => x.id === parent)!.open,
+          note: { folder: project.folder, number: n + 1 },
         });
         links.push({ source: parent, target: id });
         addWords(id, words(note.text).slice(0, 6));

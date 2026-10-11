@@ -130,7 +130,8 @@ export function label(text: string, limit = 2): string {
 /** How many of the query's words appear in the text. */
 export function score(query: string, text: string): number {
   const lower = text.toLowerCase();
-  const terms = new Set((query.toLowerCase().match(/\w+/g) ?? []).filter((w) => w.length > 2));
+  // Common words ("the", "how", "with") say nothing about the subject, so they do not count as a match.
+  const terms = new Set((query.toLowerCase().match(/\w+/g) ?? []).filter((w) => w.length > 2 && !STOPWORDS.has(w)));
   let found = 0;
   for (const term of terms) if (lower.includes(term)) found++;
   return found;

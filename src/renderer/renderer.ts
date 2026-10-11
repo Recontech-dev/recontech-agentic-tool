@@ -1,10 +1,11 @@
 // The window: one terminal per profile, and the brain graph on the right.
 // This file runs in the page, so it uses only browser APIs and window.api from the preload script.
 
-interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama" | "free"; model?: string }
-interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs" }
+interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama" | "free"; model?: string; role?: string }
+interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number }
 interface GraphNode { id: string; kind: string; label: string; text: string; detail: string; open: boolean;
   color?: string; resume?: { profile: string; id: string; folder: string }; tag?: string; unfinished?: boolean;
+  note?: { folder: string; number: number };
   x: number; y: number; vx: number; vy: number }
 interface Match { kind: string; project: string; folder: string; text: string; when: string }
 
@@ -22,6 +23,7 @@ let active = "";
 let isOnline = true;
 let accounts: Record<string, string> = {};
 let freeContained = true;
+let roles: { id: string; name: string }[] = [{ id: "", name: "No role" }];
 const terms = new Map<string, { term: any; fit: any; panel: HTMLElement }>();
 /** Profiles whose terminal has been started. A running terminal is never restarted unless the user asks. */
 const started = new Set<string>();
@@ -65,17 +67,30 @@ function makePanel(profile: Profile): void {
     workspace = answer;
     render();
   };
-  bar.append(dot, name, hint, spacer, restart, remove);
+  // The terminal's job. Claude Code is told about it when the terminal starts.
+  const role = document.createElement("select");
+  role.className = "small role";
+  role.title = "This terminal's job. Builder writes, Reviewer reviews, Tester tests; they hand work to each other.";
+  for (const option of roles) role.add(new Option(option.name, option.id));
+  role.value = profile.role ?? "";
+  role.hidden = profile.kind === "free";
+  role.onchange = async () => {
+    workspace = await api.invoke("profile:role", profile.id, role.value);
+    if (started.has(profile.id) && confirm(`${profile.name} gets its new role when its terminal restarts. Restart it now? What is running there is closed.`)) start(profile.id);
+  };
+  bar.append(dot, name, hint, spacer, role, restart, remove);
   const body = document.createElement("div");
   body.className = "term";
   panel.append(bar, body);
   $("panels").append(panel);
 
-  const term = new Terminal({ cursorBlink: true, fontFamily: "Consolas, 'Cascadia Mono', Menlo, monospace", fontSize: 13,
+  const term = new Terminal({ cursorBlink: true, fontFamily: "Consolas, 'Cascadia Mono', Menlo, monospace", fontSize: workspace.fontSize ?? 13,
     theme: { background: "#000000" }, scrollback: 5000 });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(body);
+  // Ctrl+Alt+1..6 and Ctrl+Alt+B belong to the app (switch terminal, show or hide the brain), not to the terminal.
+  term.attachCustomKeyEventHandler((event: KeyboardEvent) => !(event.ctrlKey && event.altKey && /^[1-6b]$/i.test(event.key)));
   term.onData((data: string) => api.send("term:input", profile.id, data));
   term.onResize(({ cols, rows }: { cols: number; rows: number }) => api.send("term:resize", profile.id, cols, rows));
   panel.addEventListener("mousedown", () => select(profile.id));
@@ -283,6 +298,7 @@ function showFreeHint(): void {
 interface FreeInfo {
   enabled: boolean; canEncrypt: boolean; contained: boolean;
   providers: { id: string; name: string; model: string; hasKey: boolean; keyUrl: string; note: string; privacy: string }[];
+  custom: { baseUrl: string; model: string; hasKey: boolean };
   status: { providers: { id: string; name: string; state: string; served: number; lastProblem: string }[] };
 }
 
@@ -323,13 +339,43 @@ async function openFreeDialog(): Promise<void> {
     box.append(head, policy, key, model, result);
     list.append(box);
   }
+  // One provider of the user's own choosing, tried after the ones above.
+  const own = document.createElement("div");
+  own.className = "provider";
+  own.dataset.id = "custom";
+  const ownHead = document.createElement("div");
+  ownHead.className = "head";
+  const ownName = document.createElement("b");
+  ownName.textContent = "Your own provider";
+  const ownNote = document.createElement("span");
+  ownNote.className = "dim";
+  ownNote.textContent = "Any service with an OpenAI-compatible API, including one on your own computer or network. Tried last.";
+  ownHead.append(ownName, ownNote);
+  const ownUrl = document.createElement("input");
+  ownUrl.className = "baseurl";
+  ownUrl.placeholder = "Address, for example http://localhost:1234/v1";
+  ownUrl.value = info.custom.baseUrl;
+  ownUrl.style.gridColumn = "1 / -1";
+  const ownKey = document.createElement("input");
+  ownKey.type = "password";
+  ownKey.className = "key";
+  ownKey.placeholder = info.custom.hasKey ? "Key saved. Type a new one to replace it." : "API key, if it needs one";
+  const ownModel = document.createElement("input");
+  ownModel.className = "model";
+  ownModel.placeholder = "Model name";
+  ownModel.value = info.custom.model;
+  const ownResult = document.createElement("div");
+  ownResult.className = "outcome dim";
+  own.append(ownHead, ownUrl, ownKey, ownModel, ownResult);
+  list.append(own);
   $("freeDialog").hidden = false;
 }
 
-function freeEntries(): { id: string; key?: string; model: string }[] {
+function freeEntries(): { id: string; key?: string; model: string; baseUrl?: string }[] {
   return [...document.querySelectorAll<HTMLElement>("#providers .provider")].map((box) => {
     const key = (box.querySelector(".key") as HTMLInputElement).value;
-    return { id: box.dataset.id!, model: (box.querySelector(".model") as HTMLInputElement).value, ...(key ? { key } : {}) };
+    const baseUrl = (box.querySelector(".baseurl") as HTMLInputElement | null)?.value;
+    return { id: box.dataset.id!, model: (box.querySelector(".model") as HTMLInputElement).value, ...(key ? { key } : {}), ...(baseUrl !== undefined ? { baseUrl } : {}) };
   });
 }
 
@@ -403,7 +449,9 @@ $("folder").onclick = async () => {
   if (workspace.folder === before) return;
   // The one case where every terminal restarts, because each must move to the new folder.
   started.clear();
+  await showKit();
   render();
+  offerSharedNotes();
 };
 $("layout").onclick = async () => {
   workspace = await api.invoke("workspace:layout", workspace.layout === "tabs" ? "grid" : "tabs");
@@ -468,6 +516,161 @@ window.addEventListener("resize", () => {
   resizeTimer = window.setTimeout(() => { fitAll(); resizeMap(); }, 120);
 });
 
+/* ---------- Comfort: text size, panel width, shortcuts ---------- */
+
+function setFontSize(size: number): void {
+  workspace.fontSize = Math.max(9, Math.min(24, size));
+  for (const { term } of terms.values()) term.options.fontSize = workspace.fontSize;
+  soon(fitAll);
+  api.invoke("ui:save", { fontSize: workspace.fontSize });
+}
+$("smaller").onclick = () => setFontSize((workspace.fontSize ?? 13) - 1);
+$("bigger").onclick = () => setFontSize((workspace.fontSize ?? 13) + 1);
+
+function setBrainWidth(width: number): void {
+  const limited = Math.max(260, Math.min(width, window.innerWidth - 320));
+  const brain = $("brain");
+  brain.style.flex = `0 0 ${limited}px`;
+  brain.style.maxWidth = "none";
+  workspace.brainWidth = limited;
+}
+$("divider").addEventListener("pointerdown", (event) => {
+  const divider = $("divider");
+  divider.setPointerCapture(event.pointerId);
+  divider.classList.add("dragging");
+  const move = (e: PointerEvent) => setBrainWidth(window.innerWidth - e.clientX);
+  const stop = () => {
+    divider.classList.remove("dragging");
+    divider.removeEventListener("pointermove", move);
+    divider.removeEventListener("pointerup", stop);
+    soon(() => { fitAll(); resizeMap(); });
+    api.invoke("ui:save", { brainWidth: workspace.brainWidth });
+  };
+  divider.addEventListener("pointermove", move);
+  divider.addEventListener("pointerup", stop);
+});
+
+window.addEventListener("keydown", (event) => {
+  if (!event.ctrlKey || !event.altKey) return;
+  if (/^[1-6]$/.test(event.key)) {
+    const profile = workspace.profiles[Number(event.key) - 1];
+    if (profile) select(profile.id);
+    event.preventDefault();
+  } else if (event.key.toLowerCase() === "b") {
+    $("toggle").click();
+    event.preventDefault();
+  }
+}, true);
+
+/* ---------- Project kit ---------- */
+
+async function showKit(): Promise<void> {
+  const info: { kits: { id: string; name: string }[]; roles: { id: string; name: string }[]; kit: string; detected: string } = await api.invoke("kit:get");
+  roles = info.roles;
+  const select = $("kit") as HTMLSelectElement;
+  select.length = 0;
+  for (const kit of info.kits) select.add(new Option(`Kit: ${kit.name}`, kit.id));
+  select.value = info.kit;
+  select.title = `Project kit: standing instructions for this kind of project, given to Claude Code when a terminal starts. The files in this folder suggest: ${info.detected}.`;
+  select.hidden = !workspace.folder;
+}
+$("kit").addEventListener("change", async () => {
+  workspace = await api.invoke("kit:set", ($("kit") as HTMLSelectElement).value);
+  if (started.size) alert("The new kit applies to terminals when they start. Restart a terminal (↻) to use it there.");
+});
+
+/* ---------- Team memory ---------- */
+
+async function showShareInfo(): Promise<{ newNotes: number; exists: boolean }> {
+  const info: { folder: string; exists?: boolean; exported?: string; sharedNotes?: number; newNotes?: number } = await api.invoke("share:info");
+  $("shareInfo").textContent = !info.folder
+    ? "Choose a project folder first."
+    : info.exists
+      ? `The share file has ${info.sharedNotes} notes (written ${info.exported}). ${info.newNotes ? `${info.newNotes} of them are new to you.` : "You already have all of them."}`
+      : "This project has no share file yet.";
+  ($("shareImport") as HTMLButtonElement).disabled = !info.newNotes;
+  ($("shareExport") as HTMLButtonElement).disabled = !info.folder;
+  return { newNotes: info.newNotes ?? 0, exists: !!info.exists };
+}
+/** When the opened project carries notes from teammates that this brain lacks, offer them. */
+async function offerSharedNotes(): Promise<void> {
+  const { newNotes } = await showShareInfo();
+  $("shared").hidden = !newNotes;
+  $("sharedText").textContent = `This project comes with ${newNotes} shared note${newNotes === 1 ? "" : "s"} from teammates that your brain does not have yet.`;
+}
+$("share").onclick = async () => {
+  await showShareInfo();
+  $("shareDialog").hidden = false;
+};
+$("shareClose").onclick = () => ($("shareDialog").hidden = true);
+$("shareExport").onclick = async () => {
+  const answer = await api.invoke("share:export");
+  if (answer.error) return alert(answer.error);
+  await showShareInfo();
+  $("shareInfo").textContent = `Wrote ${answer.notes} notes to .alt-brain.json in the project folder. Commit it with the project to share it.`;
+};
+const importShared = async () => {
+  const answer = await api.invoke("share:import");
+  if (answer.error) return alert(answer.error);
+  $("shared").hidden = true;
+  await showShareInfo();
+  $("shareInfo").textContent = `Imported ${answer.added} note${answer.added === 1 ? "" : "s"} into your brain.`;
+};
+$("shareImport").onclick = importShared;
+$("sharedGo").onclick = importShared;
+$("sharedClose").onclick = () => ($("shared").hidden = true);
+
+/* ---------- Notes and unfinished work ---------- */
+
+$("noteAdd").onclick = async () => {
+  const input = $("noteText") as HTMLInputElement;
+  const answer = await api.invoke("note:add", input.value);
+  if (answer.error) return alert(answer.error);
+  input.value = "";
+};
+$("noteText").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") $("noteAdd").click();
+});
+
+async function showUnfinished(): Promise<void> {
+  const items: { title: string; project: string; folder: string; profile: string; id: string; ended: string; type: string; here: boolean }[] = await api.invoke("brain:unfinished");
+  $("todo").hidden = !items.length;
+  const here = items.filter((i) => i.here).length;
+  $("todoTitle").textContent = `Unfinished work: ${here} in this project, ${items.length - here} elsewhere`;
+  const list = $("todoList");
+  list.textContent = "";
+  for (const item of items.slice(0, 30)) {
+    const row = document.createElement("div");
+    row.className = "todo-item";
+    const what = document.createElement("span");
+    what.className = "what";
+    what.textContent = `${item.here ? "" : item.project + ": "}${item.title}`;
+    what.title = `${item.title} · ${item.type} · ${item.profile} · ${item.ended.slice(0, 10)}`;
+    const go = document.createElement("button");
+    go.textContent = "Resume";
+    go.onclick = async () => {
+      const target = workspace.profiles.find((p) => p.name === item.profile);
+      if (target && started.has(target.id) && !confirm(`Resuming restarts ${item.profile}'s terminal. What is running there now is closed. Continue?`)) return;
+      const answer = await api.invoke("session:resume", { profile: item.profile, id: item.id, folder: item.folder });
+      if (answer.error) return alert(answer.error);
+      select(answer.id);
+    };
+    row.append(what, go);
+    list.append(row);
+  }
+}
+
+/* ---------- Updates ---------- */
+
+async function checkUpdate(): Promise<void> {
+  const update: { current: string; latest: string } | null = await api.invoke("update:check");
+  if (!update) return;
+  $("updateText").textContent = `Version ${update.latest} is available (you have ${update.current}).`;
+  $("update").hidden = false;
+}
+$("updateGo").onclick = () => api.invoke("update:open");
+$("updateClose").onclick = () => ($("update").hidden = true);
+
 /* ---------- Smart sorting ---------- */
 
 const TYPES = ["bug fix", "feature", "refactor", "setup and deploy", "tests", "docs", "question"];
@@ -507,11 +710,17 @@ $("search").addEventListener("input", () => {
     const results = $("results");
     results.textContent = "";
     if (!query) return;
-    const matches: Match[] = await api.invoke("brain:search", query);
+    const { matches, byMeaning }: { matches: Match[]; byMeaning: boolean } = await api.invoke("brain:search", query);
     if (!matches.length) {
       results.innerHTML = '<div class="result dim">Nothing matches.</div>';
       return;
     }
+    const how = document.createElement("div");
+    how.className = "result dim";
+    how.textContent = byMeaning
+      ? "Found by meaning and by words."
+      : "Found by matching words. For search by meaning, run Ollama with the nomic-embed-text model.";
+    results.append(how);
     for (const match of matches) {
       const item = document.createElement("div");
       item.className = "result";
@@ -746,6 +955,19 @@ function show(n: GraphNode | null): void {
   meta.className = "dim";
   meta.textContent = n.detail + (n.open ? " · open now" : "");
   detail.append(title, document.createTextNode(n.text + "\n"), meta);
+  if (n.note) {
+    const ref = n.note;
+    const button = document.createElement("button");
+    button.id = "resume";
+    button.textContent = "Delete this note";
+    button.onclick = async () => {
+      if (!confirm("Delete this note from the brain?")) return;
+      await api.invoke("note:remove", ref);
+      selected = null;
+      show(null);
+    };
+    detail.append(button);
+  }
   if (n.resume) {
     const ref = n.resume;
     const button = document.createElement("button");
@@ -824,7 +1046,11 @@ canvas.addEventListener("dblclick", () => {
   camera.manual = false;
   heat = Math.max(heat, 0.3);
 });
-api.on("brain:graph", (data) => { updateGraph(data); show(selected || hovered); });
+api.on("brain:graph", (data) => {
+  updateGraph(data);
+  show(selected || hovered);
+  showUnfinished();
+});
 
 
 // The canvas changes size with the window, the panels and the status line above it; keep the drawing in step.
@@ -836,7 +1062,12 @@ new ResizeObserver(() => resizeMap()).observe(canvas);
   workspace = await api.invoke("workspace:get");
   resizeMap();
   freeContained = (await api.invoke("free:get")).contained;
+  await showKit();
+  if (workspace.brainWidth) setBrainWidth(workspace.brainWidth);
   render();
+  offerSharedNotes();
+  showUnfinished();
+  checkUpdate();
   showFreeHint();
   await refreshAccounts();
   offerFoundFolders();

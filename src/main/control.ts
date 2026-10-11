@@ -12,6 +12,8 @@ export interface TerminalInfo {
   name: string;
   kind: string;
   running: boolean;
+  /** The terminal's job, if it was given one: Builder, Reviewer or Tester. */
+  role?: string;
 }
 
 export interface Hooks {
