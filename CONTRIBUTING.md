@@ -28,10 +28,10 @@ printf '#!/bin/sh\nnode scripts/check-secrets.mjs\n' > .git/hooks/pre-commit
 | `src/brain/store.ts` | Notes per project, word helpers |
 | `src/brain/sessions.ts` | Reads Claude Code session transcripts into the session index |
 | `src/brain/brain.ts` | Search, project summary and the graph |
-| `src/brain/workspace.ts` | Profiles and the project folder |
+| `src/brain/workspace.ts` | Profiles, existing Claude Code folders, and the project folder |
+| `src/brain/launch.ts` | How each profile's Claude Code starts (sign-in or Ollama), internet and Ollama checks |
 | `src/mcp/server.ts` | The brain as an MCP server for Claude Code |
 | `src/test/` | Tests (`node --test`) |
-| `legacy/` | The earlier Python tool, unmaintained |
 
 ## Rules
 

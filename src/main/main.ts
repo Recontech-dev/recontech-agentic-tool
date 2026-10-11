@@ -7,10 +7,13 @@ import * as path from "node:path";
 import * as pty from "node-pty";
 
 import { Brain } from "../brain/brain";
+import { claudeCommand, ollamaModels, online, profileEnv } from "../brain/launch";
 import { home } from "../brain/paths";
+import { sameFolder } from "../brain/sessions";
 import * as ws from "../brain/workspace";
 
 const BRAIN_REFRESH_MS = 10_000;
+const NETWORK_CHECK_MS = 30_000;
 
 // Screenshots taken for automated checks miss GPU-drawn content, so those runs draw in software.
 if (process.env.ALT_SCREENSHOT) app.disableHardwareAcceleration();
@@ -18,8 +21,11 @@ if (process.env.ALT_SCREENSHOT) app.disableHardwareAcceleration();
 const workspace = ws.load();
 const brain = new Brain(() => ws.sources(workspace));
 const terminals = new Map<string, pty.IPty>();
+const sizes = new Map<string, { cols: number; rows: number }>();
 let win: BrowserWindow | null = null;
 let lastGraph = "";
+let isOnline = true;
+let failedChecks = 0;
 
 /** The MCP config every Claude Code session is started with, so all of them share the brain. */
 function mcpConfigFile(): string {
@@ -50,38 +56,47 @@ function stopTerminal(id: string): void {
   terminals.delete(id);
 }
 
-function startTerminal(id: string, cols: number, rows: number): void {
+function startTerminal(id: string, options: { folder?: string; resume?: string } = {}): void {
   stopTerminal(id);
   const profile = workspace.profiles.find((p) => p.id === id);
   if (!profile) return;
-  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-  delete env.ELECTRON_RUN_AS_NODE;
-  if (profile.configDir) env.CLAUDE_CONFIG_DIR = profile.configDir;
-  else delete env.CLAUDE_CONFIG_DIR;
-  const folder = workspace.folder && fs.existsSync(workspace.folder) ? workspace.folder : os.homedir();
+  const wanted = options.folder || workspace.folder;
+  const folder = wanted && fs.existsSync(wanted) ? wanted : os.homedir();
+  const { cols, rows } = sizes.get(id) ?? { cols: 80, rows: 24 };
   const shell = shellCommand();
-  const term = pty.spawn(shell.file, shell.args, { name: "xterm-256color", cols: cols || 80, rows: rows || 24, cwd: folder, env });
+  const term = pty.spawn(shell.file, shell.args, { name: "xterm-256color", cols, rows, cwd: folder, env: profileEnv(profile, process.env) });
   terminals.set(id, term);
   term.onData((data) => send("term:data", id, data));
   term.onExit(() => {
     if (terminals.get(id) === term) terminals.delete(id);
     send("term:exit", id);
   });
-  const quote = process.platform === "win32" ? (s: string) => `'${s.replace(/'/g, "''")}'` : (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   // ALT_NO_CLAUDE is for automated checks of the window: the shell opens but Claude Code is not started.
-  if (!process.env.ALT_NO_CLAUDE) term.write(`claude --mcp-config ${quote(mcpConfigFile())}\r`);
+  if (!process.env.ALT_NO_CLAUDE) term.write(claudeCommand(profile, mcpConfigFile(), options.resume) + "\r");
 }
 
 function pushGraph(force = false): void {
   try {
     brain.update();
-    const graph = JSON.stringify(brain.graph(workspace.folder));
+    const colors = Object.fromEntries(workspace.profiles.map((p) => [p.name, p.color]));
+    const graph = JSON.stringify(brain.graph(workspace.folder, colors));
     if (force || graph !== lastGraph) {
       lastGraph = graph;
       send("brain:graph", JSON.parse(graph));
     }
   } catch (error) {
     console.error("brain refresh failed", error);
+  }
+}
+
+async function checkNetwork(): Promise<void> {
+  // One failed check can be a hiccup (for example while the app is starting), so it takes two in a row.
+  failedChecks = (await online()) ? 0 : failedChecks + 1;
+  const now = failedChecks < 2;
+  if (failedChecks === 1) setTimeout(checkNetwork, 5000);
+  if (now !== isOnline) {
+    isOnline = now;
+    send("net:status", isOnline);
   }
 }
 
@@ -100,6 +115,7 @@ function createWindow(): void {
   win.webContents.on("did-start-loading", () => [...terminals.keys()].forEach(stopTerminal));
   win.webContents.on("did-finish-load", () => {
     pushGraph(true);
+    send("net:status", isOnline);
     // ALT_SCREENSHOT=<file.png> saves a picture of the window after a few seconds and quits (for automated checks).
     const shot = process.env.ALT_SCREENSHOT;
     if (shot) {
@@ -136,7 +152,17 @@ ipcMain.handle("workspace:layout", (_event, layout: "grid" | "tabs") => {
   ws.save(workspace);
   return workspace;
 });
-ipcMain.handle("profile:add", (_event, name: string) => result(() => ws.addProfile(workspace, String(name))));
+ipcMain.handle("profile:options", async () => ({
+  ollama: await ollamaModels(),
+  folders: ws.existingClaudeFolders().filter((f) => !workspace.profiles.some((p) => p.configDir && sameFolder(p.configDir, f))),
+}));
+ipcMain.handle("profile:add", (_event, request: ws.NewProfile) =>
+  result(() => {
+    const profile = ws.addProfile(workspace, request);
+    pushGraph(true);
+    return profile;
+  }),
+);
 ipcMain.handle("profile:remove", (_event, id: string) =>
   result(() => {
     stopTerminal(id);
@@ -145,15 +171,29 @@ ipcMain.handle("profile:remove", (_event, id: string) =>
   }),
 );
 ipcMain.handle("brain:search", (_event, query: string) => brain.search(String(query), 20));
-ipcMain.on("term:start", (_event, id: string, cols: number, rows: number) => startTerminal(String(id), Number(cols), Number(rows)));
+ipcMain.handle("session:resume", (_event, ref: { profile: string; id: string; folder: string }) => {
+  const profile = workspace.profiles.find((p) => p.name === ref?.profile);
+  if (!profile) return { error: `The profile ${ref?.profile} is not in this workspace any more.` };
+  if (!fs.existsSync(ref.folder)) return { error: `The session's folder no longer exists: ${ref.folder}` };
+  startTerminal(profile.id, { folder: ref.folder, resume: String(ref.id) });
+  return { id: profile.id };
+});
+ipcMain.on("term:start", (_event, id: string, cols: number, rows: number) => {
+  if (cols > 0 && rows > 0) sizes.set(String(id), { cols: Math.floor(cols), rows: Math.floor(rows) });
+  startTerminal(String(id));
+});
 ipcMain.on("term:input", (_event, id: string, data: string) => terminals.get(String(id))?.write(String(data)));
 ipcMain.on("term:resize", (_event, id: string, cols: number, rows: number) => {
-  if (cols > 0 && rows > 0) terminals.get(String(id))?.resize(Math.floor(cols), Math.floor(rows));
+  if (!(cols > 0 && rows > 0)) return;
+  sizes.set(String(id), { cols: Math.floor(cols), rows: Math.floor(rows) });
+  terminals.get(String(id))?.resize(Math.floor(cols), Math.floor(rows));
 });
 
 app.whenReady().then(() => {
   createWindow();
   setInterval(pushGraph, BRAIN_REFRESH_MS);
+  checkNetwork();
+  setInterval(checkNetwork, NETWORK_CHECK_MS);
 });
 
 app.on("window-all-closed", () => {

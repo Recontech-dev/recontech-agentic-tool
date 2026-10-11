@@ -155,3 +155,46 @@ test("the MCP server answers like Claude Code expects and shares the brain", asy
   server.kill();
   assert.equal(notes(project)[0].source, "claude-code");
 });
+
+import { claudeCommand, profileEnv } from "../brain/launch";
+
+test("first start picks up Claude Code folders that are already signed in", () => {
+  for (const name of [".claude-account1", ".claude-account2", ".claude-old"]) fs.mkdirSync(path.join(root, name));
+  fs.writeFileSync(path.join(root, ".claude-notafolder"), "");
+  const workspace = ws.load();
+  assert.deepEqual(workspace.profiles.map((p) => p.name), ["Main", "Account 1", "Account 2", "old"]);
+  assert.equal(workspace.profiles[1].configDir, path.join(root, ".claude-account1"));
+  assert.throws(() => ws.addProfile(workspace, { name: "Again", configDir: path.join(root, ".claude-account1") }), /already uses/);
+});
+
+test("an Ollama profile runs Claude Code on the local model, offline", () => {
+  const workspace = ws.load();
+  assert.throws(() => ws.addProfile(workspace, { name: "Offline", kind: "ollama" }), /Ollama model/);
+  const offline = ws.addProfile(workspace, { name: "Offline", kind: "ollama", model: "qwen3:8b" });
+  const env = profileEnv(offline, { PATH: "x", ELECTRON_RUN_AS_NODE: "1", ANTHROPIC_API_KEY: "real" });
+  assert.equal(env.ANTHROPIC_BASE_URL, "http://localhost:11434");
+  assert.equal(env.ANTHROPIC_API_KEY, "");
+  assert.equal(env.CLAUDE_CONFIG_DIR, offline.configDir);
+  assert.equal(env.ELECTRON_RUN_AS_NODE, undefined);
+  assert.match(claudeCommand(offline, "cfg.json"), /^claude --model 'qwen3:8b' --mcp-config 'cfg.json'$/);
+
+  const main = workspace.profiles[0];
+  const mainEnv = profileEnv(main, { CLAUDE_CONFIG_DIR: "elsewhere", ANTHROPIC_API_KEY: "kept" });
+  assert.equal(mainEnv.CLAUDE_CONFIG_DIR, undefined);
+  assert.equal(mainEnv.ANTHROPIC_BASE_URL, undefined);
+  assert.equal(mainEnv.ANTHROPIC_API_KEY, "kept");
+  assert.equal(claudeCommand(main, "c.json", "abc-123"), "claude --resume abc-123 --mcp-config 'c.json'");
+  assert.equal(claudeCommand(main, "c.json", "bad; rm -rf"), "claude --mcp-config 'c.json'");
+});
+
+test("session circles carry their profile colour and how to resume them", () => {
+  const shop = path.join(root, "shop");
+  const workspace = ws.load();
+  const work = ws.addProfile(workspace, "Work");
+  transcript(work.configDir!, shop, "abc", [user("fix the cart total", shop)]);
+  const brain = new Brain(() => ws.sources(workspace));
+  brain.update();
+  const session = brain.graph(shop, { Work: "#123456" }).nodes.find((n) => n.kind === "session")!;
+  assert.equal(session.color, "#123456");
+  assert.deepEqual(session.resume, { profile: "Work", id: "abc", folder: shop });
+});

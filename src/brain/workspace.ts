@@ -15,6 +15,18 @@ export interface Profile {
   color: string;
   /** Claude Code's config folder for this profile; null means Claude Code's normal one (~/.claude). */
   configDir: string | null;
+  /** "claude" signs in to Claude as usual; "ollama" runs Claude Code on a local Ollama model, offline. */
+  kind?: "claude" | "ollama";
+  /** The Ollama model, for an "ollama" profile. */
+  model?: string;
+}
+
+export interface NewProfile {
+  name: string;
+  kind?: "claude" | "ollama";
+  model?: string;
+  /** Reuse a Claude Code folder that is already signed in, instead of making a new one. */
+  configDir?: string;
 }
 
 export interface Workspace {
@@ -23,14 +35,35 @@ export interface Workspace {
   layout: "grid" | "tabs";
 }
 
+/** Claude Code folders that already exist, such as ~/.claude-account1 made by an earlier multi-terminal setup. */
+export function existingClaudeFolders(): string[] {
+  // The folder that holds ~/.claude, so tests can point it somewhere else.
+  const home = path.dirname(defaultClaudeDir());
+  try {
+    return fs
+      .readdirSync(home, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && /^\.claude-[\w-]+$/.test(e.name))
+      .map((e) => path.join(home, e.name))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 export function load(): Workspace {
   try {
     const data = JSON.parse(fs.readFileSync(workspaceFile(), "utf8"));
     if (Array.isArray(data.profiles) && data.profiles.length) return { layout: "grid", ...data };
   } catch {
-    // First start, or an unreadable file: begin with one profile using the normal Claude Code login.
+    // First start, or an unreadable file: begin with the normal Claude Code sign-in,
+    // plus any signed-in Claude Code folders already on this computer.
   }
-  return { folder: "", layout: "grid", profiles: [{ id: "default", name: "Main", color: COLORS[0], configDir: null }] };
+  const profiles: Profile[] = [{ id: "default", name: "Main", color: COLORS[0], configDir: null, kind: "claude" }];
+  for (const folder of existingClaudeFolders().slice(0, MAX_PROFILES - 1)) {
+    const name = path.basename(folder).replace(/^\.claude-/, "").replace(/^account(\d+)$/i, "Account $1");
+    profiles.push({ id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"), name, color: COLORS[profiles.length], configDir: folder, kind: "claude" });
+  }
+  return { folder: "", layout: "grid", profiles };
 }
 
 export function save(workspace: Workspace): void {
@@ -38,18 +71,28 @@ export function save(workspace: Workspace): void {
   fs.writeFileSync(workspaceFile(), JSON.stringify(workspace, null, 2), "utf8");
 }
 
-export function addProfile(workspace: Workspace, name: string): Profile {
-  const clean = name.trim().slice(0, 30);
+export function addProfile(workspace: Workspace, request: NewProfile | string): Profile {
+  const wanted = typeof request === "string" ? { name: request } : request;
+  const clean = String(wanted.name ?? "").trim().slice(0, 30);
+  const kind = wanted.kind === "ollama" ? "ollama" : "claude";
   if (!clean) throw new Error("Give the profile a name.");
   if (workspace.profiles.length >= MAX_PROFILES) throw new Error(`There can be at most ${MAX_PROFILES} profiles.`);
   if (workspace.profiles.some((p) => p.name.toLowerCase() === clean.toLowerCase())) throw new Error("That name is already used.");
+  if (kind === "ollama" && !wanted.model?.trim()) throw new Error("Choose an Ollama model.");
+  if (wanted.configDir && !fs.existsSync(wanted.configDir)) throw new Error("That Claude Code folder does not exist.");
+  if (wanted.configDir && workspace.profiles.some((p) => p.configDir && path.resolve(p.configDir) === path.resolve(wanted.configDir!))) {
+    throw new Error("Another profile already uses that folder.");
+  }
   const slug = clean.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "profile";
   let id = slug;
   for (let n = 2; workspace.profiles.some((p) => p.id === id); n++) id = `${slug}-${n}`;
   const used = new Set(workspace.profiles.map((p) => p.color));
   const profile: Profile = {
-    id, name: clean, color: COLORS.find((c) => !used.has(c)) ?? COLORS[0], configDir: path.join(profilesDir(), id),
+    id, name: clean, kind,
+    color: COLORS.find((c) => !used.has(c)) ?? COLORS[0],
+    configDir: wanted.configDir || path.join(profilesDir(), id),
   };
+  if (kind === "ollama") profile.model = wanted.model!.trim();
   fs.mkdirSync(profile.configDir!, { recursive: true });
   workspace.profiles.push(profile);
   save(workspace);

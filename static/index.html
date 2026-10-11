@@ -55,12 +55,19 @@
   #dialog form { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; width:min(440px, calc(100% - 32px)); display:flex; flex-direction:column; gap:10px; }
   #dialog .row { display:flex; gap:8px; justify-content:flex-end; }
   #error { color:#ff7b7b; min-height:1em; }
+  #dialog label { display:flex; gap:8px; align-items:flex-start; }
+  #dialog select { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 8px; width:100%; }
+  #net { color:#1b1f26; background:var(--topic); border-radius:6px; padding:3px 8px; font-weight:600; }
+  #net[hidden] { display:none; }
+  .bar .warn { color:var(--topic); }
+  #resume { margin-top:6px; }
 </style>
 </head>
 <body>
 <header>
   <strong>Agentic Lazy Tool</strong>
   <button id="folder" title="Folder every terminal starts in">Choose project folder</button>
+  <span id="net" hidden title="Claude cannot be reached. Profiles that run on Ollama keep working.">Offline</span>
   <span class="spacer"></span>
   <button id="add">+ Profile</button>
   <button id="layout">Tabs</button>
@@ -87,9 +94,17 @@
 </main>
 <div id="dialog" hidden>
   <form id="profileForm">
-    <strong>Add a Claude Code profile</strong>
-    <div class="dim">A profile is a separate Claude Code sign-in, for example your work account next to your personal one. Use only your own accounts. The new terminal asks you to sign in the first time.</div>
+    <strong>Add a profile</strong>
     <input id="profileName" placeholder="Profile name, for example Work" maxlength="30">
+    <label><input type="radio" name="kind" value="claude" checked> <span><b>Claude sign-in.</b> <span class="dim">A separate Claude Code sign-in, for example your work account next to your personal one. Use only your own accounts.</span></span></label>
+    <div id="claudeOptions">
+      <select id="existing"><option value="">New sign-in (the terminal asks you to sign in the first time)</option></select>
+    </div>
+    <label><input type="radio" name="kind" value="ollama"> <span><b>Offline with Ollama.</b> <span class="dim">Claude Code runs on a model on this computer. Works without internet and without a Claude account; answers are weaker than Claude's.</span></span></label>
+    <div id="ollamaOptions" hidden>
+      <select id="model"></select>
+      <div id="ollamaHint" class="dim"></div>
+    </div>
     <div id="error"></div>
     <div class="row"><button type="button" id="cancel">Cancel</button><button type="submit">Add</button></div>
   </form>

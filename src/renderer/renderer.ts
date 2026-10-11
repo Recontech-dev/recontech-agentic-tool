@@ -1,10 +1,10 @@
 // The window: one terminal per profile, and the brain graph on the right.
 // This file runs in the page, so it uses only browser APIs and window.api from the preload script.
 
-interface Profile { id: string; name: string; color: string; configDir: string | null }
+interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama"; model?: string }
 interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs" }
 interface GraphNode { id: string; kind: string; label: string; text: string; detail: string; open: boolean;
-  x: number; y: number; vx: number; vy: number }
+  color?: string; resume?: { profile: string; id: string; folder: string }; x: number; y: number; vx: number; vy: number }
 interface Match { kind: string; project: string; folder: string; text: string; when: string }
 
 declare const Terminal: any;
@@ -18,6 +18,7 @@ declare const api: {
 const $ = (id: string) => document.getElementById(id)!;
 let workspace: Workspace;
 let active = "";
+let isOnline = true;
 const terms = new Map<string, { term: any; fit: any; panel: HTMLElement }>();
 
 /* ---------- Terminals ---------- */
@@ -35,7 +36,8 @@ function makePanel(profile: Profile): void {
   name.className = "name";
   name.textContent = profile.name;
   const hint = document.createElement("span");
-  hint.textContent = profile.configDir ? "own sign-in" : "your normal Claude Code sign-in";
+  hint.className = "hint";
+  hint.textContent = profile.kind === "ollama" ? `offline · ${profile.model}` : profile.configDir ? "own sign-in" : "your normal Claude Code sign-in";
   const spacer = document.createElement("span");
   spacer.className = "spacer";
   const restart = document.createElement("button");
@@ -120,6 +122,20 @@ function render(): void {
 }
 
 api.on("term:data", (id: string, data: string) => terms.get(id)?.term.write(data));
+function showNetwork(): void {
+  $("net").hidden = isOnline;
+  for (const profile of workspace?.profiles ?? []) {
+    const hint = terms.get(profile.id)?.panel.querySelector(".hint");
+    if (!hint || profile.kind === "ollama") continue;
+    hint.classList.toggle("warn", !isOnline);
+    hint.textContent = (profile.configDir ? "own sign-in" : "your normal Claude Code sign-in") + (isOnline ? "" : " · needs internet");
+  }
+}
+api.on("net:status", (online: boolean) => {
+  isOnline = online;
+  showNetwork();
+});
+
 api.on("term:exit", (id: string) => terms.get(id)?.term.write("\r\n\x1b[90m[The terminal closed. Press ↻ to start it again.]\x1b[0m\r\n"));
 
 $("folder").onclick = async () => {
@@ -139,16 +155,42 @@ $("toggle").onclick = () => {
   $("toggle").textContent = brain.hidden ? "Show brain" : "Hide brain";
   requestAnimationFrame(() => { fitAll(); resizeMap(); });
 };
-$("add").onclick = () => {
+const chosenKind = () => (document.querySelector('input[name="kind"]:checked') as HTMLInputElement).value;
+function showKind(): void {
+  $("claudeOptions").hidden = chosenKind() !== "claude";
+  $("ollamaOptions").hidden = chosenKind() !== "ollama";
+}
+document.querySelectorAll('input[name="kind"]').forEach((radio) => radio.addEventListener("change", showKind));
+
+$("add").onclick = async () => {
   ($("profileName") as HTMLInputElement).value = "";
   $("error").textContent = "";
+  const options: { ollama: string[] | null; folders: string[] } = await api.invoke("profile:options");
+  const existing = $("existing") as HTMLSelectElement;
+  existing.length = 1;
+  for (const folder of options.folders) existing.add(new Option(`Use the sign-in already in ${folder}`, folder));
+  const model = $("model") as HTMLSelectElement;
+  model.length = 0;
+  for (const name of options.ollama ?? []) model.add(new Option(name, name));
+  $("ollamaHint").textContent =
+    options.ollama === null ? "Ollama is not running. Start the Ollama app, then open this again."
+    : !options.ollama.length ? "No model downloaded yet. While online, run for example:  ollama pull qwen3:8b"
+    : "Claude Code needs a model that can use tools, such as qwen3 or qwen3-coder.";
+  (document.querySelector('input[name="kind"][value="claude"]') as HTMLInputElement).checked = true;
+  showKind();
   $("dialog").hidden = false;
   $("profileName").focus();
 };
 $("cancel").onclick = () => ($("dialog").hidden = true);
 $("profileForm").onsubmit = async (event) => {
   event.preventDefault();
-  const answer = await api.invoke("profile:add", ($("profileName") as HTMLInputElement).value);
+  const kind = chosenKind();
+  const answer = await api.invoke("profile:add", {
+    name: ($("profileName") as HTMLInputElement).value,
+    kind,
+    model: kind === "ollama" ? ($("model") as HTMLSelectElement).value : undefined,
+    configDir: kind === "claude" ? ($("existing") as HTMLSelectElement).value || undefined : undefined,
+  });
   if (answer.error) {
     $("error").textContent = answer.error;
     return;
@@ -205,7 +247,8 @@ let width = 0, height = 0, heat = 1;
 let hovered: GraphNode | null = null, selected: GraphNode | null = null, dragged: GraphNode | null = null;
 const radius = (n: GraphNode) => (n.kind === "project" ? 14 : n.kind === "topic" ? 7 : n.kind === "session" ? 6 : 5);
 const colour = (n: GraphNode) =>
-  n.kind === "project" ? css("--project") : n.kind === "topic" ? css("--topic") : n.open ? css("--open") : n.kind === "session" ? css("--session") : css("--note");
+  n.kind === "project" ? css("--project") : n.kind === "topic" ? css("--topic") : n.open ? css("--open")
+  : n.kind === "session" ? n.color || css("--session") : css("--note");
 
 function resizeMap(): void {
   const scale = window.devicePixelRatio || 1;
@@ -258,8 +301,9 @@ function step(): void {
     n.vy += (height / 2 - n.y) * 0.002;
     if (n !== dragged) { n.x += n.vx * heat; n.y += n.vy * heat; }
     n.vx *= 0.8; n.vy *= 0.8;
-    n.x = Math.max(16, Math.min(width - 16, n.x));
-    n.y = Math.max(16, Math.min(height - 16, n.y));
+    // Keep circles and their labels inside the picture.
+    n.x = Math.max(24, Math.min(width - 110, n.x));
+    n.y = Math.max(24, Math.min(height - 24, n.y));
   }
   heat = Math.max(heat * 0.995, 0.02);
 }
@@ -310,6 +354,18 @@ function show(n: GraphNode | null): void {
   meta.className = "dim";
   meta.textContent = n.detail + (n.open ? " · open now" : "");
   detail.append(title, document.createTextNode(n.text + "\n"), meta);
+  if (n.resume) {
+    const ref = n.resume;
+    const button = document.createElement("button");
+    button.id = "resume";
+    button.textContent = `Resume in ${ref.profile}`;
+    button.onclick = async () => {
+      const answer = await api.invoke("session:resume", ref);
+      if (answer.error) return alert(answer.error);
+      select(answer.id);
+    };
+    detail.append(button);
+  }
 }
 
 function nodeAt(event: PointerEvent) {
@@ -345,6 +401,7 @@ api.on("brain:graph", (data) => { updateGraph(data); show(selected || hovered); 
   workspace = await api.invoke("workspace:get");
   resizeMap();
   render();
+  showNetwork();
   const frame = () => { step(); draw(); requestAnimationFrame(frame); };
   frame();
 })();

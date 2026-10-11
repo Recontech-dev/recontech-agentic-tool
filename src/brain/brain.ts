@@ -12,6 +12,9 @@ export interface Node {
   text: string;
   detail: string;
   open: boolean;
+  /** For sessions: the profile's colour, and what is needed to resume it. */
+  color?: string;
+  resume?: { profile: string; id: string; folder: string };
 }
 
 export interface Link {
@@ -80,7 +83,7 @@ export class Brain {
     return lines.join("\n");
   }
 
-  graph(currentFolder: string): { nodes: Node[]; links: Link[] } {
+  graph(currentFolder: string, colors: Record<string, string> = {}): { nodes: Node[]; links: Link[] } {
     const nodes: Node[] = [];
     const links: Link[] = [];
     const projects = new Map<string, string>();
@@ -126,6 +129,8 @@ export class Brain {
         id, kind: "session", label: label(session.title), text: session.title,
         detail: `session · ${session.profile} · ${session.ended.slice(0, 16).replace("T", " ")} · ${session.prompts.length} prompts`,
         open: now - session.modified < ACTIVE_MS,
+        color: colors[session.profile],
+        resume: { profile: session.profile, id: session.id, folder: session.folder },
       });
       links.push({ source: parent, target: id });
       addWords(id, session.keywords.slice(0, 5));

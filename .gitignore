@@ -1,9 +1,7 @@
-__pycache__/
-*.pyc
-.venv/
+# Build output
+node_modules/
 dist/
-.pytest_cache/
-uv.lock
+release/
 
 # Personal data: keys, conversations and memory must never be committed.
 .env
@@ -11,7 +9,5 @@ uv.lock
 *.key
 *.pem
 .agentic-lazy-tool/
-build/
-*.spec
-node_modules/
-release/
+.claude/
+CLAUDE.md
