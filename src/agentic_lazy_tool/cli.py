@@ -607,10 +607,6 @@ class App:
         if key:
             config.set_key(name, key)
         profile = {"name": name, "provider": provider, "model": model, "base_url": base_url}
-        if provider == "claude":
-            workspace = self.ask_user("Workspace ID (press Enter if the key was made inside a workspace): ").strip()
-            if workspace:
-                profile["workspace"] = workspace
         self.chain.profiles.append(profile)
         config.save(self.cfg)
         self.say(f"Added {name} at the end of the chain. Run /test to check it.")

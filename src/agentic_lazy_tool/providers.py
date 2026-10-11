@@ -126,8 +126,8 @@ def _failure(error: Exception) -> ProviderFailure:
         # Other 4xx (such as an unknown model) are specific to this request.
         if "anthropic-workspace-id" in str(error):
             return ProviderFailure(
-                "this key is not tied to a workspace. Set the workspace with /workspace <profile> <workspace id>, "
-                "or create a key inside a workspace in the Anthropic Console",
+                "this is an organization-wide key. Create a normal API key at "
+                "https://console.anthropic.com/settings/keys and add it with /key <profile>",
                 BAD_KEY_COOLDOWN,
             )
         return ProviderFailure(f"request rejected ({status}): {getattr(error, 'message', error)}")
