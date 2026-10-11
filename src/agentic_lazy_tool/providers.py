@@ -4,7 +4,9 @@ Claude goes through the Anthropic SDK. Every other provider exposes an
 OpenAI-compatible endpoint, so one adapter covers them all.
 """
 
+import re
 from collections.abc import Iterator
+from urllib.parse import urlparse
 
 import anthropic
 import openai
@@ -71,14 +73,25 @@ OUT_OF_CREDIT_COOLDOWN = 3600
 BAD_KEY_COOLDOWN = 3600
 OUTAGE_COOLDOWN = 30
 
+TOO_LONG = re.compile(
+    r"too long|too large|context length|context window|maximum context|token limit|reduce the length", re.I
+)
+
 
 class ProviderFailure(Exception):
     """A profile could not answer. `cooldown` is how long to skip it, in seconds."""
 
-    def __init__(self, reason: str, cooldown: float = 0):
+    def __init__(self, reason: str, cooldown: float = 0, too_long: bool = False):
         super().__init__(reason)
         self.reason = reason
         self.cooldown = cooldown
+        self.too_long = too_long
+
+
+def is_local(profile: dict) -> bool:
+    """True for a model served from this machine or the local network, which works offline."""
+    host = urlparse(profile.get("base_url") or "").hostname or ""
+    return host in ("localhost", "127.0.0.1", "::1") or host.startswith(("192.168.", "10."))
 
 
 def needs_key(profile: dict) -> bool:
@@ -108,7 +121,9 @@ def _failure(error: Exception) -> ProviderFailure:
             return ProviderFailure("out of credit", OUT_OF_CREDIT_COOLDOWN)
         if status >= 500:
             return ProviderFailure(f"provider error {status}", OUTAGE_COOLDOWN)
-        # Other 4xx (unknown model, request too large) are specific to this request.
+        if status == 413 or (status == 400 and TOO_LONG.search(str(error))):
+            return ProviderFailure("conversation too long for this model", too_long=True)
+        # Other 4xx (such as an unknown model) are specific to this request.
         return ProviderFailure(f"request rejected ({status}): {getattr(error, 'message', error)}")
     if isinstance(error, CONNECTION_ERROR):
         return ProviderFailure("unreachable", OUTAGE_COOLDOWN)

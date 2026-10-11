@@ -14,6 +14,14 @@ KEYRING_SERVICE = "agentic-lazy-tool"
 MAX_CLAUDE_PROFILES = 6
 
 
+def home_git_repo() -> Path | None:
+    """The git repository the data folder sits inside, if any. It should be none."""
+    for folder in [HOME.resolve(), *HOME.resolve().parents]:
+        if (folder / ".git").exists():
+            return folder
+    return None
+
+
 def load() -> dict:
     if CONFIG_FILE.exists():
         cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))

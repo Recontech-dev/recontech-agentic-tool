@@ -72,3 +72,23 @@ def test_missing_key_is_skipped(monkeypatch):
     monkeypatch.setattr(config, "get_key", lambda name: None if name == "a" else "key")
     assert ask(chain)[0] == "b"
     assert calls == ["b"]
+
+
+def test_too_long_conversation_is_retried_with_recent_messages(monkeypatch):
+    seen = []
+
+    def fake_stream(profile, key, messages, system=""):
+        seen.append(len(messages))
+        if len(messages) > 2:
+            raise providers.ProviderFailure("too long", too_long=True)
+        yield "short answer"
+
+    monkeypatch.setattr(providers, "stream_reply", fake_stream)
+    monkeypatch.setattr(config, "get_key", lambda name: "key")
+    chain = Chain({"profiles": [{"name": "small", "provider": "groq", "model": "m", "base_url": "x"}], "system": ""})
+    messages = [{"role": "user" if i % 2 == 0 else "assistant", "content": str(i)} for i in range(9)]
+    notices = []
+    assert chain.ask(messages, notify=notices.append) == ("small", "short answer")
+    assert seen == [9, 5, 3, 1]
+    assert len(messages) == 9 and chain.cooldown_left("small") == 0
+    assert chain.replies == {"small": 1}

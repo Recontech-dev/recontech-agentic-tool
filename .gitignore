@@ -4,3 +4,12 @@ __pycache__/
 dist/
 .pytest_cache/
 uv.lock
+
+# Personal data: keys, conversations and memory must never be committed.
+.env
+.env.*
+*.key
+*.pem
+.agentic-lazy-tool/
+build/
+*.spec

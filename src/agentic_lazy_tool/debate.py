@@ -15,7 +15,7 @@ STANCES = [
 BRIEF = " Answer in under 250 words."
 
 
-def run(chain: Chain, question: str, console, notify) -> str:
+def run(chain: Chain, question: str, console, notify, renderer) -> str:
     ready = chain.ready()
     if not ready:
         raise NoProviderAvailable(chain.unavailable_reason())
@@ -55,12 +55,14 @@ def run(chain: Chain, question: str, console, notify) -> str:
         "Give one recommendation, the main reason for it, and any disagreement the reader should know about."
     )
     console.print("[bold]Verdict[/bold]")
-    _, verdict = chain.ask(
-        [{"role": "user", "content": judge_prompt}],
-        system="You are the judge of a debate. Be decisive.",
-        on_start=lambda name: console.print(f"[cyan]{name}>[/cyan] ", end=""),
-        on_text=lambda text: console.print(text, end="", markup=False, highlight=False),
-        notify=notify,
-    )
-    console.print()
+    try:
+        _, verdict = chain.ask(
+            [{"role": "user", "content": judge_prompt}],
+            system="You are the judge of a debate. Be decisive.",
+            on_start=renderer.start,
+            on_text=renderer.feed,
+            notify=notify,
+        )
+    finally:
+        renderer.close()
     return verdict
