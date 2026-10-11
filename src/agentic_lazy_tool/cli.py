@@ -82,6 +82,7 @@ Profiles
   /switch <name|auto>  pin one profile for this session, or go back to the chain
   /model <name> <id>   change the model a profile uses
   /key <name>          replace a profile's API key
+  /workspace <name> [id]  set or clear the Anthropic workspace ID of a Claude profile
 
 Other
   /context             show everything that is loaded for the model right now
@@ -606,6 +607,10 @@ class App:
         if key:
             config.set_key(name, key)
         profile = {"name": name, "provider": provider, "model": model, "base_url": base_url}
+        if provider == "claude":
+            workspace = self.ask_user("Workspace ID (press Enter if the key was made inside a workspace): ").strip()
+            if workspace:
+                profile["workspace"] = workspace
         self.chain.profiles.append(profile)
         config.save(self.cfg)
         self.say(f"Added {name} at the end of the chain. Run /test to check it.")
@@ -680,6 +685,19 @@ class App:
         profile["model"] = model.strip()
         config.save(self.cfg)
         self.say(f"{name} now uses {profile['model']}.")
+
+    def cmd_workspace(self, arg: str) -> None:
+        name, _, workspace = arg.partition(" ")
+        profile = self.chain.find(name)
+        if not profile or profile["provider"] != "claude":
+            return self.error("Usage: /workspace <Claude profile name> [workspace id]")
+        if workspace.strip():
+            profile["workspace"] = workspace.strip()
+        else:
+            profile.pop("workspace", None)
+        config.save(self.cfg)
+        self.chain.cooldowns.pop(name, None)
+        self.say(f"{name} workspace: {profile.get('workspace', '(none)')}. Run /test to check it.")
 
     def cmd_key(self, name: str) -> None:
         if not self.chain.find(name):

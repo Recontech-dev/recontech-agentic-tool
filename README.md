@@ -148,6 +148,8 @@ Free tiers and model names change often. The model shown at `/add` is only a sug
 | `/switch <name\|auto>` | Pin one profile for this session, or go back to the chain |
 | `/model <name> <id>` | Change the model a profile uses |
 | `/key <name>` | Replace a profile's API key |
+| `/workspace <name> [id]` | Set or clear the Anthropic workspace ID of a Claude profile (needed for keys not made inside a workspace) |
+| `/workspace <name> [id]` | Set or clear the Anthropic workspace ID of a Claude profile (needed for organization-wide keys) |
 
 **Other**
 

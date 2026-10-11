@@ -276,3 +276,30 @@ def test_offline_setting_can_be_forced(app, monkeypatch):
     assert app.chain.offline and config.load()["offline"] == "on"
     app.cmd_offline("off")
     assert not app.chain.offline
+
+
+def test_workspace_is_saved_and_sent_as_a_header(app, monkeypatch):
+    import anthropic
+
+    app.chain.profiles.append({"name": "work", "provider": "claude", "model": "m", "base_url": None})
+    app.cmd_workspace("work wrkspc_123")
+    assert config.load()["profiles"][1]["workspace"] == "wrkspc_123"
+
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+            raise anthropic.APIConnectionError(request=None)
+
+    monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
+    from agentic_lazy_tool.providers import _stream_claude
+
+    try:
+        list(_stream_claude(app.chain.find("work"), "key", [], ""))
+    except anthropic.APIConnectionError:
+        pass
+    assert seen["default_headers"] == {"anthropic-workspace-id": "wrkspc_123"}
+
+    app.cmd_workspace("work")
+    assert "workspace" not in app.chain.find("work")

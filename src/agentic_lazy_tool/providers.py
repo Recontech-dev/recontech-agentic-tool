@@ -124,6 +124,12 @@ def _failure(error: Exception) -> ProviderFailure:
         if status == 413 or (status == 400 and TOO_LONG.search(str(error))):
             return ProviderFailure("conversation too long for this model", too_long=True)
         # Other 4xx (such as an unknown model) are specific to this request.
+        if "anthropic-workspace-id" in str(error):
+            return ProviderFailure(
+                "this key is not tied to a workspace. Set the workspace with /workspace <profile> <workspace id>, "
+                "or create a key inside a workspace in the Anthropic Console",
+                BAD_KEY_COOLDOWN,
+            )
         return ProviderFailure(f"request rejected ({status}): {getattr(error, 'message', error)}")
     if isinstance(error, CONNECTION_ERROR):
         return ProviderFailure("unreachable", OUTAGE_COOLDOWN)
@@ -131,7 +137,9 @@ def _failure(error: Exception) -> ProviderFailure:
 
 
 def _stream_claude(profile: dict, key: str, messages: list, system: str) -> Iterator[str]:
-    client = anthropic.Anthropic(api_key=key, max_retries=0)
+    # Organization-wide keys must say which workspace a request belongs to.
+    headers = {"anthropic-workspace-id": profile["workspace"]} if profile.get("workspace") else None
+    client = anthropic.Anthropic(api_key=key, max_retries=0, default_headers=headers)
     kwargs = {"model": profile["model"], "max_tokens": 64000, "messages": messages}
     if system:
         kwargs["system"] = system
