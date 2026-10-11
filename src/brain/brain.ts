@@ -3,6 +3,7 @@
 import * as path from "node:path";
 
 import { Session, Source, refresh, sameFolder } from "./sessions";
+import { Labels, isUnfinished, loadLabels, sessionKey } from "./sorting";
 import { Note, label, notes, score, tree, words } from "./store";
 
 export interface Node {
@@ -15,6 +16,9 @@ export interface Node {
   /** For sessions: the profile's colour, and what is needed to resume it. */
   color?: string;
   resume?: { profile: string; id: string; folder: string };
+  /** From Smart sorting, when it is on: the kind of work, and whether it was left unfinished. */
+  tag?: string;
+  unfinished?: boolean;
 }
 
 export interface Link {
@@ -36,6 +40,7 @@ const ACTIVE_MS = 10 * 60 * 1000;
 
 export class Brain {
   sessions: Session[] = [];
+  labels: Record<string, Labels> = {};
 
   constructor(public sources: () => Source[]) {}
 
@@ -43,7 +48,10 @@ export class Brain {
   update(): boolean {
     const result = refresh(this.sources());
     this.sessions = result.sessions;
-    return result.changed;
+    const labels = loadLabels();
+    const labelsChanged = JSON.stringify(labels) !== JSON.stringify(this.labels);
+    this.labels = labels;
+    return result.changed || labelsChanged;
   }
 
   search(query: string, limit = 10): Match[] {
@@ -59,7 +67,8 @@ export class Brain {
       if (points) {
         found.push([points, {
           kind: "session", project: path.basename(session.folder), folder: session.folder,
-          text: `${session.title}. You asked: ${session.prompts.slice(0, 3).join(" / ")}`, when: session.ended.slice(0, 16).replace("T", " "),
+          text: `${this.describeLabels(session)}${session.title}. You asked: ${session.prompts.slice(0, 3).join(" / ")}`,
+          when: session.ended.slice(0, 16).replace("T", " "),
         }]);
       }
     }
@@ -67,17 +76,30 @@ export class Brain {
     return found.slice(0, limit).map(([, match]) => match);
   }
 
+  /** "[bug fix, unfinished] " when Smart sorting has labelled the session, otherwise nothing. */
+  describeLabels(session: Session): string {
+    const labels = this.labels[sessionKey(session)];
+    if (!labels || labels.modified !== session.modified) return "";
+    return `[${labels.type}${isUnfinished(labels) ? ", unfinished" : ""}] `;
+  }
+
   /** Everything the brain holds about one project, as text for a model to read. */
   projectSummary(folder: string): string {
     const kept: Note[] = notes(folder);
-    const past = this.sessions.filter((s) => sameFolder(s.folder, folder)).slice(0, 8);
+    const all = this.sessions.filter((s) => sameFolder(s.folder, folder));
+    const past = all.slice(0, 8);
+    const open = all.filter((s) => isUnfinished(this.labels[sessionKey(s)])).slice(0, 8);
     const lines = [`Project: ${folder}`];
+    if (open.length) {
+      lines.push("Unfinished work (sessions that looked unfinished when they ended):");
+      for (const s of open) lines.push(`  - ${s.ended.slice(0, 10)} "${s.title}". Asked: ${s.prompts.slice(0, 2).join(" / ")}`);
+    }
     lines.push(kept.length ? "Notes:" : "No notes saved yet.");
     kept.forEach((note, i) => lines.push(`  ${i + 1}. (${note.time.slice(0, 10)}) ${note.text}`));
     if (past.length) {
       lines.push("Recent sessions:");
       for (const s of past) {
-        lines.push(`  - ${s.ended.slice(0, 10)} "${s.title}" (${s.profile}). Asked: ${s.prompts.slice(0, 3).join(" / ")}`);
+        lines.push(`  - ${s.ended.slice(0, 10)} ${this.describeLabels(s)}"${s.title}" (${s.profile}). Asked: ${s.prompts.slice(0, 3).join(" / ")}`);
       }
     }
     return lines.join("\n");
@@ -125,12 +147,19 @@ export class Brain {
       if (count >= SESSIONS_PER_PROJECT) continue;
       perProject.set(parent, count + 1);
       const id = `s:${session.profile}:${session.id}`;
+      const labels = this.labels[sessionKey(session)];
+      const sorted = labels && labels.modified === session.modified ? labels : undefined;
       nodes.push({
         id, kind: "session", label: label(session.title), text: session.title,
-        detail: `session · ${session.profile} · ${session.ended.slice(0, 16).replace("T", " ")} · ${session.prompts.length} prompts`,
+        detail: [
+          "session", sorted?.type, isUnfinished(sorted) ? "unfinished" : undefined, session.profile,
+          session.ended.slice(0, 16).replace("T", " "), `${session.prompts.length} prompts`,
+        ].filter(Boolean).join(" · "),
         open: now - session.modified < ACTIVE_MS,
         color: colors[session.profile],
         resume: { profile: session.profile, id: session.id, folder: session.folder },
+        tag: sorted?.type,
+        unfinished: isUnfinished(sorted),
       });
       links.push({ source: parent, target: id });
       addWords(id, session.keywords.slice(0, 5));

@@ -5,15 +5,19 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as pty from "node-pty";
+import { ChildProcess, spawn } from "node:child_process";
 
 import { Brain } from "../brain/brain";
 import { claudeCommand, ollamaModels, online, profileEnv } from "../brain/launch";
 import { home } from "../brain/paths";
 import { sameFolder } from "../brain/sessions";
+import { bundleReady } from "../brain/sorting";
 import * as ws from "../brain/workspace";
 
 const BRAIN_REFRESH_MS = 10_000;
 const NETWORK_CHECK_MS = 30_000;
+/** The Smart sorting model is about 1.7 GB; this leaves room for the download and the rest of the disk. */
+const MODEL_SPACE_BYTES = 2.5 * 1024 ** 3;
 
 // Screenshots taken for automated checks miss GPU-drawn content, so those runs draw in software.
 if (process.env.ALT_SCREENSHOT) app.disableHardwareAcceleration();
@@ -26,6 +30,8 @@ let win: BrowserWindow | null = null;
 let lastGraph = "";
 let isOnline = true;
 let failedChecks = 0;
+let sorter: ChildProcess | null = null;
+let sortingStatus: Record<string, unknown> = { status: "off" };
 
 /** The MCP config every Claude Code session is started with, so all of them share the brain. */
 function mcpConfigFile(): string {
@@ -75,6 +81,93 @@ function startTerminal(id: string, options: { folder?: string; resume?: string }
   if (!process.env.ALT_NO_CLAUDE) term.write(claudeCommand(profile, mcpConfigFile(), options.resume) + "\r");
 }
 
+/** A script inside the installed app, at the path a plain Node process can run it from. */
+function unpacked(...parts: string[]): string {
+  return path.join(__dirname, "..", ...parts).replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
+}
+
+function setSortingStatus(status: Record<string, unknown>): void {
+  sortingStatus = status;
+  send("sorting:status", status);
+}
+
+function startSorter(): void {
+  if (sorter || !workspace.sorting?.enabled) return;
+  const env: Record<string, string> = { ...(process.env as Record<string, string>), ELECTRON_RUN_AS_NODE: "1", ALT_HOME: home(), LAYA_CACHE: workspace.sorting.modelDir };
+  const child = spawn(process.execPath, [unpacked("brain", "sorter.js")], { env, stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+  sorter = child;
+  let buffer = "";
+  child.stdout!.on("data", (chunk) => {
+    buffer += chunk;
+    const lines = buffer.split("\n");
+    buffer = lines.pop()!;
+    for (const line of lines) {
+      try {
+        const message = JSON.parse(line);
+        if (message.status === "warning") continue;
+        setSortingStatus(message);
+        if (message.status === "ready") pushGraph();
+      } catch {
+        // not a progress line
+      }
+    }
+  });
+  child.on("exit", (code) => {
+    if (sorter === child) sorter = null;
+    if (workspace.sorting?.enabled && sortingStatus.status !== "error" && code) setSortingStatus({ status: "error", message: `stopped (exit code ${code})` });
+  });
+}
+
+function stopSorter(): void {
+  sorter?.kill();
+  sorter = null;
+}
+
+/** Free bytes on the drive that holds `folder` (or its nearest existing parent). */
+function freeSpace(folder: string): number {
+  let dir = folder;
+  while (!fs.existsSync(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+  try {
+    const stats = fs.statfsSync(dir);
+    return stats.bavail * stats.bsize;
+  } catch {
+    return Infinity;
+  }
+}
+
+async function toggleSorting(): Promise<Record<string, unknown>> {
+  if (workspace.sorting?.enabled) {
+    workspace.sorting.enabled = false;
+    ws.save(workspace);
+    stopSorter();
+    setSortingStatus({ status: "off" });
+    return sortingStatus;
+  }
+  let modelDir = workspace.sorting?.modelDir || path.join(home(), "models");
+  if (!bundleReady(modelDir) && freeSpace(modelDir) < MODEL_SPACE_BYTES) {
+    const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+    const answer = await dialog.showMessageBox(win!, {
+      type: "question",
+      buttons: ["Choose a folder", "Cancel"],
+      message: "Smart sorting needs to download a 1.7 GB model",
+      detail: `The drive of ${modelDir} has only ${gb(freeSpace(modelDir))} GB free. Choose a folder on a drive with at least 2.5 GB free.`,
+    });
+    if (answer.response !== 0) return sortingStatus;
+    const choice = await dialog.showOpenDialog(win!, { title: "Folder for the Smart sorting model", properties: ["openDirectory", "createDirectory"] });
+    if (choice.canceled || !choice.filePaths[0]) return sortingStatus;
+    modelDir = path.join(choice.filePaths[0], "agentic-lazy-tool-model");
+    if (freeSpace(modelDir) < MODEL_SPACE_BYTES) {
+      setSortingStatus({ status: "error", message: "That drive does not have 2.5 GB free either." });
+      return sortingStatus;
+    }
+  }
+  workspace.sorting = { enabled: true, modelDir };
+  ws.save(workspace);
+  setSortingStatus({ status: "starting" });
+  startSorter();
+  return sortingStatus;
+}
+
 function pushGraph(force = false): void {
   try {
     brain.update();
@@ -107,7 +200,11 @@ function createWindow(): void {
     backgroundColor: "#12161c",
     title: "Agentic Lazy Tool",
     autoHideMenuBar: true,
-    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true,
+      // A hidden window normally stops drawing; automated screenshots need it to keep going.
+      backgroundThrottling: !process.env.ALT_SCREENSHOT,
+    },
   });
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -171,6 +268,8 @@ ipcMain.handle("profile:remove", (_event, id: string) =>
   }),
 );
 ipcMain.handle("brain:search", (_event, query: string) => brain.search(String(query), 20));
+ipcMain.handle("sorting:get", () => sortingStatus);
+ipcMain.handle("sorting:toggle", () => toggleSorting());
 ipcMain.handle("session:resume", (_event, ref: { profile: string; id: string; folder: string }) => {
   const profile = workspace.profiles.find((p) => p.name === ref?.profile);
   if (!profile) return { error: `The profile ${ref?.profile} is not in this workspace any more.` };
@@ -194,9 +293,14 @@ app.whenReady().then(() => {
   setInterval(pushGraph, BRAIN_REFRESH_MS);
   checkNetwork();
   setInterval(checkNetwork, NETWORK_CHECK_MS);
+  if (workspace.sorting?.enabled) {
+    setSortingStatus({ status: "starting" });
+    startSorter();
+  }
 });
 
 app.on("window-all-closed", () => {
+  stopSorter();
   [...terminals.keys()].forEach(stopTerminal);
   app.quit();
 });

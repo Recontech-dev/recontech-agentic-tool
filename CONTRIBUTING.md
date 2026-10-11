@@ -30,13 +30,15 @@ printf '#!/bin/sh\nnode scripts/check-secrets.mjs\n' > .git/hooks/pre-commit
 | `src/brain/brain.ts` | Search, project summary and the graph |
 | `src/brain/workspace.ts` | Profiles, existing Claude Code folders, and the project folder |
 | `src/brain/launch.ts` | How each profile's Claude Code starts (sign-in or Ollama), internet and Ollama checks |
+| `src/brain/sorting.ts`, `src/brain/sorter.ts` | Smart sorting: the questions asked of Laya, and the background worker |
 | `src/mcp/server.ts` | The brain as an MCP server for Claude Code |
 | `src/test/` | Tests (`node --test`) |
 
 ## Rules
 
 - Never commit keys, `.env` files, or anything from `~/.agentic-lazy-tool/` or a Claude Code config folder.
-- Add or update a test with each change. Tests must not read the real sessions on your machine; set `ALT_HOME` and `ALT_CLAUDE_HOME` to temporary folders as the existing tests do.
+- Add or update a test with each change. Tests must not read the real sessions on your machine; set `ALT_HOME` and `ALT_CLAUDE_HOME` to temporary folders as the existing tests do. Tests must not download the Smart sorting model; pass a stand-in model to `classify` instead.
+- Screenshots and examples must use made-up data, never your own projects or sessions.
 - The app must never read, store or send Claude sign-in credentials. Claude Code handles sign-in.
 - Keep pull requests to one change each and describe what you tested.
 

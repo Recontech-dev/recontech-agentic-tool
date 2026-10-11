@@ -17,6 +17,9 @@ export interface Session {
   started: string;
   ended: string;
   prompts: string[];
+  /** How the session ended: the user's last message and Claude's last reply. */
+  lastPrompt?: string;
+  lastReply?: string;
   replies: number;
   keywords: string[];
   file: string;
@@ -52,6 +55,7 @@ export function readTranscript(file: string, profile: string): Session | null {
   let folder = "", title = "", started = "", ended = "", replies = 0;
   const prompts: string[] = [];
   const said: string[] = [];
+  let lastPrompt = "", lastReply = "";
   for (const line of fs.readFileSync(file, "utf8").split("\n")) {
     if (!line.trim()) continue;
     let entry: any;
@@ -72,6 +76,7 @@ export function readTranscript(file: string, profile: string): Session | null {
         const typed = typedText(block);
         if (typed && !typed.startsWith("[Request interrupted")) {
           said.push(typed);
+          lastPrompt = typed;
           if (prompts.length < MAX_PROMPTS) prompts.push(redact(typed.slice(0, PROMPT_CHARS)));
         }
       }
@@ -80,6 +85,7 @@ export function readTranscript(file: string, profile: string): Session | null {
       if (text) {
         replies++;
         said.push(text);
+        lastReply = text;
       }
     }
   }
@@ -92,6 +98,8 @@ export function readTranscript(file: string, profile: string): Session | null {
     started,
     ended,
     prompts,
+    lastPrompt: redact(lastPrompt.slice(-PROMPT_CHARS)),
+    lastReply: redact(lastReply.slice(-PROMPT_CHARS)),
     replies,
     keywords: words(said.join(" ")).slice(0, 8),
     file,

@@ -198,3 +198,48 @@ test("session circles carry their profile colour and how to resume them", () => 
   assert.equal(session.color, "#123456");
   assert.deepEqual(session.resume, { profile: "Work", id: "abc", folder: shop });
 });
+
+import * as sorting from "../brain/sorting";
+
+test("smart sorting labels settled sessions and the brain uses the labels", async () => {
+  const shop = path.join(root, "shop");
+  const workspace = ws.load();
+  const file = transcript(path.join(root, "claude-default"), shop, "s1", [
+    { type: "ai-title", aiTitle: "Fix the cart total" }, user("the cart total is wrong", shop), assistant("Found the rounding bug.", shop),
+  ]);
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  fs.utimesSync(file, old, old);
+  transcript(path.join(root, "claude-default"), shop, "s2", [user("still working on this", shop)]);
+
+  const brain = new Brain(() => ws.sources(workspace));
+  brain.update();
+  const todo = sorting.pending(brain.sessions, sorting.loadLabels());
+  assert.deepEqual(todo.map((s) => s.id), ["s1"], "a session still being worked on waits");
+  assert.match(sorting.describe(todo[0]), /Title: Fix the cart total[\s\S]*- the cart total is wrong/);
+
+  const asked: any[] = [];
+  const fake: sorting.Model = {
+    async systemOne(state, questions) {
+      asked.push({ state, questions });
+      return { answers: { type: { choice: "bug fix", confidence: 0.8 }, finished: { noul: 0.2 }, decision: { noul: 0.7 } } };
+    },
+  };
+  const labels = { [sorting.sessionKey(todo[0])]: await sorting.classify(fake, todo[0]) };
+  sorting.saveLabels(labels);
+  assert.deepEqual(asked.map((a) => Object.keys(a.questions)), [["type", "decision"], ["finished"]]);
+  assert.equal(asked[1].state, "The user's last message: the cart total is wrong\nThe assistant's last reply: Found the rounding bug.");
+  assert.equal(sorting.isUnfinished({ ...labels[sorting.sessionKey(todo[0])], finished: null }), false, "no ending, no guess");
+  assert.equal(sorting.pending(brain.sessions, sorting.loadLabels()).length, 0);
+
+  assert.equal(brain.update(), true, "new labels count as a change");
+  const node = brain.graph(shop).nodes.find((n) => n.kind === "session" && n.text === "Fix the cart total")!;
+  assert.equal(node.tag, "bug fix");
+  assert.equal(node.unfinished, true);
+  assert.match(node.detail, /bug fix · unfinished/);
+  assert.match(brain.projectSummary(shop), /Unfinished work[\s\S]*Fix the cart total/);
+  assert.match(brain.search("cart")[0].text, /^\[bug fix, unfinished\] Fix the cart total/);
+
+  fs.utimesSync(file, new Date(), new Date());
+  brain.update();
+  assert.equal(brain.graph(shop).nodes.find((n) => n.text === "Fix the cart total")!.tag, undefined, "labels of an older transcript are not shown");
+});

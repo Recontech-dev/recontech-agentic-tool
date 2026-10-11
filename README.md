@@ -16,6 +16,7 @@ Agentic Lazy Tool puts your Claude Code terminals side by side in one window and
 - **See your brain:** a live network beside the terminals shows your projects, past sessions (coloured by profile), notes and the topics that link them. It arranges itself so nothing overlaps and zooms to fit as it grows.
 - **Resume anything:** click a past session and press **Resume** to continue it in the right terminal and folder.
 - **Search everything:** find any earlier decision or session across all projects.
+- **Smart sorting (optional):** a local model labels every session as bug fix, feature, refactor, setup and deploy, tests, docs or question, and spots work that was left unfinished. Claude is told about unfinished work first, and the graph can show only unfinished sessions or one kind of work.
 - **Works offline:** an Ollama profile runs Claude Code on a model on your own computer, with the same brain, when there is no internet.
 - **Private by design:** everything stays on your computer, secrets are masked before anything is stored, and the app never sees your Claude sign-in.
 
@@ -55,6 +56,17 @@ Each profile is a separate Claude Code sign-in. Use your own accounts, for examp
 
 Claude Code sends a long set of instructions with every request, so give Ollama a larger context: set the environment variable `OLLAMA_CONTEXT_LENGTH` to `32768` or more and restart Ollama. Answers from local models are slower and weaker than Claude's.
 
+## Smart sorting
+
+Smart sorting is off until you turn it on with the **Smart sorting** button above the graph.
+
+- It uses [Laya](https://github.com/receptron/laya), an open-source classification model that runs on your computer. Nothing is sent anywhere, and it works offline.
+- The first time, it downloads the model once: about 1.7 GB. If the drive it would use has less than 2.5 GB free, the app asks you to choose a folder on another drive. It uses about 2 GB of memory while it runs.
+- For each session it answers three questions: what kind of work it was, whether it was finished, and whether it records a decision worth remembering. A session is sorted once it has been quiet for 10 minutes, and again if you continue it later.
+- After the app starts, loading the model can take a minute or two; then each session takes a few seconds. It runs in the background, so you can keep working.
+- Sessions that look unfinished get a dashed orange ring in the graph, and `project_memory` lists them first so Claude picks them up. Use the menu next to the search box to show only unfinished sessions or one kind of work.
+- The kind of work is judged from the start of a session (title, topics and your first prompts), and finished-or-not from how it ended (your last message and Claude's last reply). The model understands English best, and its labels are estimates.
+
 ## How the brain works
 
 | Part | Where it lives | What it holds |
@@ -62,6 +74,7 @@ Claude Code sends a long set of instructions with every request, so give Ollama 
 | Past sessions | read from each profile's Claude Code folder, indexed in `~/.agentic-lazy-tool/brain/sessions.json` | title, project folder, dates, your prompts, main topics |
 | Notes | `~/.agentic-lazy-tool/memory/<project>/notes.jsonl` | short facts Claude or you saved with `remember` |
 | Profiles | `~/.agentic-lazy-tool/workspace.json`, sign-ins in `~/.agentic-lazy-tool/profiles/` | which Claude Code sign-ins you use |
+| Smart sorting labels | `~/.agentic-lazy-tool/brain/labels.json`, model in `~/.agentic-lazy-tool/models/` or the folder you chose | each session's kind of work and whether it was finished |
 
 - Notes and sessions are linked by the words they share, which is how the topics in the graph appear. It is a searchable memory, not a trained neural network.
 - API keys, tokens and `password=...` values are masked before anything is stored.

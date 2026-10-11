@@ -41,7 +41,11 @@
   .xterm-viewport::-webkit-scrollbar-thumb { background:#2f3845; border-radius:4px; }
   #brain { flex:2; min-width:0; max-width:620px; display:flex; flex-direction:column; border-left:1px solid var(--line); }
   #brain[hidden] { display:none; }
-  #search { margin:8px; }
+  #brainbar { display:flex; gap:8px; margin:8px; align-items:center; }
+  #search { flex:1; min-width:0; }
+  #filter { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 6px; }
+  #sortingState { color:var(--dim); font-size:12px; margin:-4px 8px 6px; }
+  #sortingState:empty { display:none; }
   #results { max-height:30%; overflow:auto; padding:0 8px; }
   #results:empty { display:none; }
   .result { padding:6px 8px; border:1px solid var(--line); border-radius:6px; margin-bottom:6px; overflow-wrap:anywhere; }
@@ -49,6 +53,7 @@
   #map { flex:1; min-height:0; width:100%; display:block; cursor:grab; }
   #legend { display:flex; flex-wrap:wrap; gap:4px 12px; padding:6px 10px; font-size:12px; color:var(--dim); border-top:1px solid var(--line); }
   #legend span::before { content:""; display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; background:var(--c); }
+  #legend span.ring::before { background:transparent; border:2px dashed var(--topic); width:6px; height:6px; }
   #detail { height:110px; overflow:auto; padding:8px 10px; background:var(--panel); border-top:1px solid var(--line); white-space:pre-wrap; overflow-wrap:anywhere; }
   .dim { color:var(--dim); }
   #dialog { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; }
@@ -80,7 +85,12 @@
     <div id="panels"></div>
   </section>
   <section id="brain">
-    <input id="search" placeholder="Search notes and past sessions" spellcheck="false">
+    <div id="brainbar">
+      <input id="search" placeholder="Search notes and past sessions" spellcheck="false">
+      <select id="filter" title="Show only some sessions (needs Smart sorting)"><option value="">All sessions</option><option value="unfinished">Unfinished</option></select>
+      <button id="sorting" title="Label every session with the kind of work and whether it was finished, using a local model">Smart sorting: off</button>
+    </div>
+    <div id="sortingState"></div>
     <div id="results"></div>
     <canvas id="map"></canvas>
     <div id="legend">
@@ -89,6 +99,7 @@
       <span style="--c:var(--note)">note</span>
       <span style="--c:var(--topic)">shared topic</span>
       <span style="--c:var(--open)">open now</span>
+      <span class="ring">unfinished</span>
     </div>
     <div id="detail" class="dim">Your brain grows as you work: every Claude Code session and every note appears here. Point at a circle to read it.</div>
   </section>

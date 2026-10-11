@@ -4,7 +4,8 @@
 interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama"; model?: string }
 interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs" }
 interface GraphNode { id: string; kind: string; label: string; text: string; detail: string; open: boolean;
-  color?: string; resume?: { profile: string; id: string; folder: string }; x: number; y: number; vx: number; vy: number }
+  color?: string; resume?: { profile: string; id: string; folder: string }; tag?: string; unfinished?: boolean;
+  x: number; y: number; vx: number; vy: number }
 interface Match { kind: string; project: string; folder: string; text: string; when: string }
 
 declare const Terminal: any;
@@ -206,6 +207,35 @@ window.addEventListener("resize", () => {
   resizeTimer = window.setTimeout(() => { fitAll(); resizeMap(); }, 120);
 });
 
+/* ---------- Smart sorting ---------- */
+
+const TYPES = ["bug fix", "feature", "refactor", "setup and deploy", "tests", "docs", "question"];
+for (const type of TYPES) ($("filter") as HTMLSelectElement).add(new Option(type[0].toUpperCase() + type.slice(1), type));
+let filter = "";
+$("filter").addEventListener("change", () => {
+  filter = ($("filter") as HTMLSelectElement).value;
+  wake();
+});
+
+function showSorting(state: { status: string; [key: string]: any }): void {
+  const on = state.status !== "off";
+  $("sorting").textContent = `Smart sorting: ${on ? "on" : "off"}`;
+  const mb = (bytes: number) => Math.round(bytes / 1024 ** 2).toLocaleString();
+  $("sortingState").textContent =
+    state.status === "starting" || state.status === "loading" ? "Loading the sorting model. This can take a minute or two after the app starts..."
+    : state.status === "downloading" ? `Downloading the sorting model (once): ${mb(state.received)} of ${mb(state.total)} MB`
+    : state.status === "sorting" ? `Sorting past sessions: ${state.done} of ${state.total}`
+    : state.status === "ready" ? `${state.sorted} sessions sorted. New sessions are sorted once they have been quiet for 10 minutes.`
+    : state.status === "error" ? `Smart sorting stopped: ${state.message}`
+    : "";
+}
+api.on("sorting:status", showSorting);
+$("sorting").onclick = async () => {
+  const on = $("sorting").textContent!.endsWith("on");
+  if (!on && !confirm("Smart sorting downloads a 1.7 GB model once and then labels your sessions on this computer (nothing is sent anywhere). It uses about 2 GB of memory while running. Turn it on?")) return;
+  showSorting(await api.invoke("sorting:toggle"));
+};
+
 /* ---------- Brain search ---------- */
 
 let searchTimer = 0;
@@ -246,6 +276,13 @@ let nodes: GraphNode[] = [];
 let links: { a: GraphNode; b: GraphNode }[] = [];
 let neighbours = new Map<GraphNode, Set<GraphNode>>();
 let width = 0, height = 0, heat = 1;
+// Once the picture has settled it stops being recalculated and redrawn, so an idle window uses no CPU.
+// Anything that changes it calls wake().
+let quietFrames = 0;
+const QUIET_AFTER = 90;
+function wake(): void {
+  quietFrames = 0;
+}
 let hovered: GraphNode | null = null, selected: GraphNode | null = null, dragged: GraphNode | null = null;
 const camera = { x: 0, y: 0, scale: 1, manual: false };
 let panning: { x: number; y: number } | null = null;
@@ -288,6 +325,7 @@ function resizeMap(): void {
   canvas.height = height * scale;
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
   heat = Math.max(heat, 0.3);
+  wake();
 }
 
 function updateGraph(data: { nodes: GraphNode[]; links: { source: string; target: string }[] }): void {
@@ -311,9 +349,12 @@ function updateGraph(data: { nodes: GraphNode[]; links: { source: string; target
   if (selected && !byId.has(selected.id)) selected = null;
   if (hovered && !byId.has(hovered.id)) hovered = null;
   if (nodes.length !== old.size) heat = 1;
+  wake();
 }
 
 function step(): void {
+  const before = nodes.map((n) => [n.x, n.y]);
+  const cameraBefore = [camera.x, camera.y, camera.scale];
   const count = nodes.length;
   for (let i = 0; i < count; i++) {
     for (let j = i + 1; j < count; j++) {
@@ -338,8 +379,14 @@ function step(): void {
     n.vx *= 0.8; n.vy *= 0.8;
   }
   for (let pass = 0; pass < 4; pass++) separate();
-  heat = Math.max(heat * 0.995, 0.02);
+  // Cool down slowly, then stop completely, so the picture comes to rest instead of trembling forever.
+  heat = heat > 0.02 ? heat * 0.995 : heat * 0.9;
   fitCamera();
+  // Settled means nothing moved more than a tenth of a pixel on screen.
+  const moved = nodes.some((n, i) => Math.abs(n.x - before[i][0]) + Math.abs(n.y - before[i][1]) > 0.1 / camera.scale)
+    || Math.abs(camera.x - cameraBefore[0]) + Math.abs(camera.y - cameraBefore[1]) > 0.1 / camera.scale
+    || Math.abs(camera.scale - cameraBefore[2]) > 0.0005;
+  quietFrames = moved ? 0 : quietFrames + 1;
 }
 
 /** No overlaps: where two nodes' boxes (circle plus label) touch, move them apart along the shorter way out. */
@@ -381,7 +428,9 @@ function fitCamera(): void {
 
 function draw(): void {
   const focus = selected || hovered, near = focus ? neighbours.get(focus)! : null;
-  const lit = (n: GraphNode) => !focus || n === focus || near!.has(n);
+  // The filter dims every session that does not match; projects, notes and topics stay as they are.
+  const matches = (n: GraphNode) => !filter || n.kind !== "session" || (filter === "unfinished" ? !!n.unfinished : n.tag === filter);
+  const lit = (n: GraphNode) => matches(n) && (!focus || n === focus || near!.has(n));
   // Circles and text grow and shrink with the camera, so the gaps kept between them stay visible on screen.
   const k = Math.min(camera.scale, 1.2);
   ctx.clearRect(0, 0, width, height);
@@ -401,6 +450,11 @@ function draw(): void {
       ctx.strokeStyle = css("--open"); ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(x, y, r + 4, 0, Math.PI * 2); ctx.stroke();
       ctx.lineWidth = 1; ctx.strokeStyle = css("--line");
+    }
+    if (n.unfinished) {
+      ctx.strokeStyle = css("--topic"); ctx.lineWidth = 2; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.arc(x, y, r + 4, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]); ctx.lineWidth = 1; ctx.strokeStyle = css("--line");
     }
     // Text too small to read is left out, except for projects and whatever is in focus.
     const textSize = fontSize(n) * k;
@@ -457,6 +511,7 @@ function pointer(event: PointerEvent | WheelEvent | MouseEvent) {
   return { node: best, sx, sy };
 }
 canvas.addEventListener("pointermove", (event) => {
+  wake();
   const { node, sx, sy } = pointer(event);
   if (dragged) {
     [dragged.x, dragged.y] = toWorld(sx, sy);
@@ -475,6 +530,7 @@ canvas.addEventListener("pointermove", (event) => {
   show(selected || hovered);
 });
 canvas.addEventListener("pointerdown", (event) => {
+  wake();
   const { node, sx, sy } = pointer(event);
   moved = false;
   canvas.setPointerCapture(event.pointerId);
@@ -482,6 +538,7 @@ canvas.addEventListener("pointerdown", (event) => {
   else panning = { x: sx, y: sy };
 });
 canvas.addEventListener("pointerup", (event) => {
+  wake();
   const { node } = pointer(event);
   if (!moved) selected = node && node === selected ? null : node;
   dragged = null;
@@ -489,6 +546,7 @@ canvas.addEventListener("pointerup", (event) => {
   show(selected || hovered);
 });
 canvas.addEventListener("wheel", (event) => {
+  wake();
   event.preventDefault();
   const { sx, sy } = pointer(event);
   const [wx, wy] = toWorld(sx, sy);
@@ -499,11 +557,15 @@ canvas.addEventListener("wheel", (event) => {
   camera.manual = true;
 }, { passive: false });
 canvas.addEventListener("dblclick", () => {
+  wake();
   camera.manual = false;
   heat = Math.max(heat, 0.3);
 });
 api.on("brain:graph", (data) => { updateGraph(data); show(selected || hovered); });
 
+
+// The canvas changes size with the window, the panels and the status line above it; keep the drawing in step.
+new ResizeObserver(() => resizeMap()).observe(canvas);
 
 /* ---------- Start ---------- */
 
@@ -512,6 +574,13 @@ api.on("brain:graph", (data) => { updateGraph(data); show(selected || hovered); 
   resizeMap();
   render();
   showNetwork();
-  const frame = () => { step(); draw(); requestAnimationFrame(frame); };
+  showSorting(await api.invoke("sorting:get"));
+  const frame = () => {
+    if (quietFrames < QUIET_AFTER || dragged || panning) {
+      step();
+      draw();
+    }
+    requestAnimationFrame(frame);
+  };
   frame();
 })();

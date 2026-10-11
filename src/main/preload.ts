@@ -4,10 +4,10 @@ import { contextBridge, ipcRenderer } from "electron";
 
 const INVOKE = [
   "workspace:get", "workspace:choose-folder", "workspace:layout", "profile:options", "profile:add", "profile:remove",
-  "brain:search", "session:resume",
+  "brain:search", "session:resume", "sorting:get", "sorting:toggle",
 ];
 const SEND = ["term:start", "term:input", "term:resize"];
-const LISTEN = ["term:data", "term:exit", "brain:graph", "net:status"];
+const LISTEN = ["term:data", "term:exit", "brain:graph", "net:status", "sorting:status"];
 
 contextBridge.exposeInMainWorld("api", {
   invoke: (channel: string, ...args: unknown[]) =>

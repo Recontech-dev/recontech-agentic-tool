@@ -33,6 +33,8 @@ export interface Workspace {
   folder: string;
   profiles: Profile[];
   layout: "grid" | "tabs";
+  /** Smart sorting (Laya) is off unless the user turns it on; its model is stored in modelDir. */
+  sorting?: { enabled: boolean; modelDir: string };
 }
 
 /** Claude Code folders that already exist, such as ~/.claude-account1 made by an earlier multi-terminal setup. */

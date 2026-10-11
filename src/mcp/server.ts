@@ -77,7 +77,7 @@ function handle(message: any): object | null {
       return reply({
         protocolVersion: params?.protocolVersion ?? PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "agentic-lazy-tool-brain", version: "0.3.0" },
+        serverInfo: { name: "agentic-lazy-tool-brain", version: "0.4.0" },
         instructions: INSTRUCTIONS,
       });
     case "ping":
