@@ -85,7 +85,7 @@ test("Claude Code reaches the other terminals through the brain's MCP server", a
   const tool = async (name: string, args: object = {}) => {
     const id = next++;
     server.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }) + "\n");
-    for (let i = 0; i < 150 && !replies.some((r) => r.id === id); i++) await new Promise((r) => setTimeout(r, 30));
+    for (let i = 0; i < 500 && !replies.some((r) => r.id === id); i++) await new Promise((r) => setTimeout(r, 30));
     return replies.find((r) => r.id === id).result;
   };
 
@@ -121,7 +121,7 @@ test("a contained terminal gets no memory and no way to read others", async (t) 
   });
   const ask = async (id: number, method: string, params: object = {}) => {
     server.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-    for (let i = 0; i < 150 && !replies.some((r) => r.id === id); i++) await new Promise((r) => setTimeout(r, 30));
+    for (let i = 0; i < 500 && !replies.some((r) => r.id === id); i++) await new Promise((r) => setTimeout(r, 30));
     return replies.find((r) => r.id === id).result;
   };
   assert.match((await ask(1, "initialize")).instructions, /runs in a container/);

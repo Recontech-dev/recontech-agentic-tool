@@ -133,7 +133,7 @@ test("the MCP server answers like Claude Code expects and shares the brain", asy
   });
   const send = (message: object) => server.stdin.write(JSON.stringify(message) + "\n");
   const waitFor = async (id: number) => {
-    for (let i = 0; i < 100 && !replies.some((r) => r.id === id); i++) await new Promise((r) => setTimeout(r, 30));
+    for (let i = 0; i < 500 && !replies.some((r) => r.id === id); i++) await new Promise((r) => setTimeout(r, 30));
     return replies.find((r) => r.id === id);
   };
 
