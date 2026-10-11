@@ -164,8 +164,12 @@
 <div id="freeDialog" hidden>
   <form id="freeForm">
     <strong>Free models terminal</strong>
-    <div class="dim">A special terminal that runs Claude Code on free AI providers, sharing the same brain. Use it when a Claude profile reaches its usage limit. Add a free API key for at least one provider; they are tried from top to bottom, and the next one takes over when one is limited. Keys are encrypted and stored only on this computer. Free models are weaker and slower than Claude.</div>
-    <div class="privacy"><b>Your data and free providers.</b> Whatever this terminal works on is sent to the provider that answers: your prompts, the files Claude Code reads, the project's memory notes, and anything it reads from other terminals. Each provider handles that under its own terms, shown below. For work that must stay private, use an Ollama profile instead: it runs on this computer and sends nothing out.</div>
+    <div class="dim">A special terminal that runs Claude Code on free AI providers. Use it when a Claude profile reaches its usage limit. Add a free API key for at least one provider; they are tried from top to bottom, and the next one takes over when one is limited. Keys are encrypted and stored only on this computer. Free models are weaker and slower than Claude.</div>
+    <div class="privacy"><b>Your data and free providers.</b> Whatever reaches this terminal is sent to the provider that answers, and each provider handles it under its own terms, shown below. With the container on, that is only what you type, paste or send to it. For work that must stay private, use an Ollama profile instead: it runs on this computer and sends nothing out.</div>
+    <label class="privacy" style="display:flex; gap:8px; align-items:flex-start">
+      <input type="checkbox" id="contained" checked>
+      <span><b>Keep the free terminal in a container (recommended).</b> It works in its own empty folder and cannot open your project files, read your memory, run commands, browse the web or read other terminals. It only sees what you type or paste into it and the messages other terminals send it. Turn this off to let free models work directly in your project.</span>
+    </label>
     <div id="providers"></div>
     <div id="freeError" class="bad"></div>
     <div class="row" style="display:flex; gap:8px; justify-content:flex-end">

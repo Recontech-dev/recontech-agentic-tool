@@ -17,6 +17,7 @@ function setup() {
     ],
     read: async (name, lines) => `screen of ${name}, ${lines} lines`,
     deliver: (name, text) => void delivered.push([name, text]),
+    contained: (name) => name === "Free models",
   });
   return { control, delivered };
 }
@@ -39,6 +40,9 @@ test("terminals can be listed, read and messaged, with a limit on back-and-forth
   assert.equal((await call("/read", { name: "account" })).data.name, "Account 1", "a clear part of the name is enough");
   assert.equal((await call("/read", { name: "nobody" })).status, 404);
   assert.equal((await call("/read", { name: "Free models" })).status, 409);
+  const fenced = await call("/read", { from: "Free models", name: "Work" });
+  assert.equal(fenced.status, 403, "a contained terminal cannot read the others");
+  assert.match(fenced.data.error, /container/);
 
   const sent = await call("/send", { from: "Account 1", to: "Work", message: "Please review src/app.ts\nand report back." });
   assert.equal(sent.data.delivered, "Work");
@@ -99,4 +103,32 @@ test("Claude Code reaches the other terminals through the brain's MCP server", a
   assert.equal(closed.isError, true);
   assert.match(closed.content[0].text, /not answering/);
   server.kill();
+});
+
+test("a contained terminal gets no memory and no way to read others", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "alt-contained-"));
+  const server = spawn(process.execPath, [path.join(__dirname, "..", "mcp", "server.js")], {
+    cwd: dir, env: { ...process.env, ALT_HOME: path.join(dir, "home"), ALT_CLAUDE_HOME: path.join(dir, "claude"), ALT_PROFILE: "Free models", ALT_CONTAINED: "1" },
+  });
+  t.after(() => server.kill());
+  const replies: any[] = [];
+  let buffer = "";
+  server.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    const lines = buffer.split("\n");
+    buffer = lines.pop()!;
+    replies.push(...lines.filter(Boolean).map((l) => JSON.parse(l)));
+  });
+  const ask = async (id: number, method: string, params: object = {}) => {
+    server.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    for (let i = 0; i < 150 && !replies.some((r) => r.id === id); i++) await new Promise((r) => setTimeout(r, 30));
+    return replies.find((r) => r.id === id).result;
+  };
+  assert.match((await ask(1, "initialize")).instructions, /runs in a container/);
+  assert.deepEqual((await ask(2, "tools/list")).tools.map((x: any) => x.name), ["list_terminals", "message_terminal"]);
+  for (const [id, name] of [[3, "project_memory"], [4, "recall"], [5, "read_terminal"], [6, "remember"]] as const) {
+    const refused = await ask(id, "tools/call", { name, arguments: { query: "x", name: "Work", note: "x" } });
+    assert.equal(refused.isError, true, `${name} is refused`);
+  }
+  assert.equal(fs.existsSync(path.join(dir, "home", "memory")), false, "nothing was written to memory");
 });

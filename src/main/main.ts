@@ -9,7 +9,7 @@ import { ChildProcess, spawn } from "node:child_process";
 
 import { Brain } from "../brain/brain";
 import { claudeCommand, ollamaModels, online, profileEnv, signedInAs } from "../brain/launch";
-import { home } from "../brain/paths";
+import { containerDir, home } from "../brain/paths";
 import { sameFolder } from "../brain/sessions";
 import { bundleReady } from "../brain/sorting";
 import * as ws from "../brain/workspace";
@@ -51,6 +51,7 @@ function mcpConfigFile(profile?: ws.Profile): string {
   if (profile) {
     env.ALT_PROFILE = profile.name;
     env.ALT_CONTROL = controlFile();
+    if (ws.isContained(workspace, profile)) env.ALT_CONTAINED = "1";
   }
   const config = { mcpServers: { brain: { command: process.execPath, args: [server], env } } };
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -66,6 +67,7 @@ const control = new Control({
     if (!profile || !win || win.isDestroyed()) return "";
     return win.webContents.executeJavaScript(`terminalText(${JSON.stringify(profile.id)}, ${Number(lines) || 60})`);
   },
+  contained: (name) => ws.isContained(workspace, workspace.profiles.find((p) => p.name === name)),
   deliver: (name, text) => {
     const profile = workspace.profiles.find((p) => p.name === name);
     const term = profile && terminals.get(profile.id);
@@ -95,7 +97,10 @@ function startTerminal(id: string, options: { folder?: string; resume?: string }
   stopTerminal(id);
   const profile = workspace.profiles.find((p) => p.id === id);
   if (!profile) return;
-  const wanted = options.folder || workspace.folder;
+  const contained = ws.isContained(workspace, profile);
+  if (contained) fs.mkdirSync(containerDir(), { recursive: true });
+  // A contained terminal never starts in a project: it gets its own empty folder.
+  const wanted = contained ? containerDir() : options.folder || workspace.folder;
   const folder = wanted && fs.existsSync(wanted) ? wanted : os.homedir();
   const { cols, rows } = sizes.get(id) ?? { cols: 80, rows: 24 };
   const shell = shellCommand();
@@ -108,7 +113,7 @@ function startTerminal(id: string, options: { folder?: string; resume?: string }
     send("term:exit", id);
   });
   // ALT_NO_CLAUDE is for automated checks of the window: the shell opens but Claude Code is not started.
-  if (!process.env.ALT_NO_CLAUDE) term.write(claudeCommand(profile, mcpConfigFile(profile), options.resume) + "\r");
+  if (!process.env.ALT_NO_CLAUDE) term.write(claudeCommand(profile, mcpConfigFile(profile), options.resume, contained) + "\r");
 }
 
 /** A script inside the installed app, at the path a plain Node process can run it from. */
@@ -310,9 +315,15 @@ ipcMain.handle("profile:remove", (_event, id: string) =>
   }),
 );
 ipcMain.handle("brain:search", (_event, query: string) => brain.search(String(query), 20));
-ipcMain.handle("free:get", () => ({ ...free.describe(), enabled: workspace.profiles.some((p) => p.kind === "free") }));
-ipcMain.handle("free:save", (_event, entries: { id: string; key?: string; model?: string }[]) =>
+ipcMain.handle("free:get", () => ({
+  ...free.describe(), enabled: workspace.profiles.some((p) => p.kind === "free"), contained: workspace.freeContained !== false,
+}));
+ipcMain.handle("free:save", (_event, entries: { id: string; key?: string; model?: string }[], contained?: boolean) =>
   result(() => {
+    if (typeof contained === "boolean") {
+      workspace.freeContained = contained;
+      ws.save(workspace);
+    }
     free.save(Array.isArray(entries) ? entries : []);
     if (!free.hasAnyKey()) throw new Error("Enter at least one API key.");
     ws.enableFreeProfile(workspace);

@@ -294,3 +294,14 @@ test("the Free models terminal is one special profile that talks to the bridge",
   assert.match(claudeCommand(free[0], "c.json"), /^claude --model free-models --mcp-config 'c.json'$/);
   assert.equal(signedInAs(free[0]), "");
 });
+
+test("the free terminal is contained unless the user turns that off", () => {
+  const workspace = ws.load();
+  ws.enableFreeProfile(workspace);
+  const free = workspace.profiles.find((p) => p.kind === "free")!;
+  assert.equal(ws.isContained(workspace, free), true);
+  assert.equal(ws.isContained(workspace, workspace.profiles[0]), false, "Claude profiles are never contained");
+  assert.match(claudeCommand(free, "c.json", undefined, true), /^claude --model free-models --restricted --strict-mcp-config --disallowedTools 'SendMessage,ListAgents,WebSearch,DesignSync,Skill' --mcp-config 'c.json'$/);
+  workspace.freeContained = false;
+  assert.equal(ws.isContained(workspace, free), false);
+});

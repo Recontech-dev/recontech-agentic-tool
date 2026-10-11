@@ -37,13 +37,21 @@ export function profileEnv(profile: Profile, base: NodeJS.ProcessEnv, bridge?: {
   return env;
 }
 
+/** Built-in Claude Code tools a contained terminal does not get, on top of what restricted mode removes. */
+export const CONTAINED_OFF = ["SendMessage", "ListAgents", "WebSearch", "DesignSync", "Skill"];
+
 /** The command typed into a profile's terminal to start Claude Code. */
-export function claudeCommand(profile: Profile, mcpConfig: string, resume?: string): string {
+export function claudeCommand(profile: Profile, mcpConfig: string, resume?: string, contained = false): string {
   const quote = process.platform === "win32" ? (s: string) => `'${s.replace(/'/g, "''")}'` : (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const parts = ["claude"];
   if (profile.kind === "ollama" && profile.model) parts.push("--model", quote(profile.model));
   // The bridge picks the real model; this name only labels the session.
   if (profile.kind === "free") parts.push("--model", "free-models");
+  // Contained: Claude Code's restricted mode removes the tools that run commands or fetch web pages and
+  // keeps file access inside the folder it starts in; only the app's own MCP server is loaded.
+  // Claude Code's own ways of reaching other sessions and the web are switched off as well, so the
+  // only way out of the container is the app's message_terminal.
+  if (contained) parts.push("--restricted", "--strict-mcp-config", "--disallowedTools", quote(CONTAINED_OFF.join(",")));
   if (resume && /^[\w-]+$/.test(resume)) parts.push("--resume", resume);
   parts.push("--mcp-config", quote(mcpConfig));
   return parts.join(" ");

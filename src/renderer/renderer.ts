@@ -21,6 +21,7 @@ let workspace: Workspace;
 let active = "";
 let isOnline = true;
 let accounts: Record<string, string> = {};
+let freeContained = true;
 const terms = new Map<string, { term: any; fit: any; panel: HTMLElement }>();
 /** Profiles whose terminal has been started. A running terminal is never restarted unless the user asks. */
 const started = new Set<string>();
@@ -86,7 +87,7 @@ function makePanel(profile: Profile): void {
     const title = document.createElement("b");
     title.textContent = "Free models terminal";
     const text = document.createElement("div");
-    text.textContent = "Claude Code on your free AI providers, with the same brain. Start it when a Claude profile reaches its limit.";
+    text.textContent = "Claude Code on your free AI providers. Start it when a Claude profile reaches its limit, then give it what to work on.";
     const go = document.createElement("button");
     go.textContent = "Start the free terminal";
     go.onclick = () => startFree();
@@ -114,9 +115,10 @@ function terminalText(id: string, lines: number): string {
 function startFree(): void {
   const profile = workspace.profiles.find((p) => p.kind === "free");
   if (!profile) return void openFreeDialog();
-  if (!started.has(profile.id) && !confirm(
-    "Start the free terminal?\n\nEverything it works on is sent to the free provider that answers: your prompts, the files Claude Code reads in this project, the project's memory notes, and anything it reads from other terminals. Providers may keep or use that under their own terms.\n\nFor work that must stay private, use an Ollama profile instead.",
-  )) return;
+  const warning = freeContained
+    ? "Start the free terminal?\n\nIt runs in a container: its own empty folder, with no access to your project files, memory or other terminals. Only what you type or paste into it, and messages other terminals send it, go to the free provider that answers."
+    : "Start the free terminal WITHOUT the container?\n\nEverything it works on is sent to the free provider that answers: your prompts, the files Claude Code reads in this project, the project's memory notes, and anything it reads from other terminals. Providers may keep or use that under their own terms.\n\nFor work that must stay private, turn the container on in Free models, or use an Ollama profile.";
+  if (!started.has(profile.id) && !confirm(warning)) return;
   terms.get(profile.id)?.panel.querySelector(".cover")?.remove();
   select(profile.id);
   if (!started.has(profile.id)) setTimeout(() => start(profile.id), 30);
@@ -269,14 +271,25 @@ $("limitClose").onclick = () => ($("limit").hidden = true);
 
 /* ---------- Free models settings ---------- */
 
+/** The free terminal's title bar says whether it is contained. */
+function showFreeHint(): void {
+  const profile = workspace?.profiles.find((p) => p.kind === "free");
+  const hint = profile && (terms.get(profile.id)?.panel.querySelector(".hint") as HTMLElement | null);
+  if (!hint) return;
+  hint.textContent = freeContained ? "free AI providers · in a container" : "free AI providers · NOT contained: works in your project";
+  hint.classList.toggle("warn", !freeContained);
+}
+
 interface FreeInfo {
-  enabled: boolean; canEncrypt: boolean;
+  enabled: boolean; canEncrypt: boolean; contained: boolean;
   providers: { id: string; name: string; model: string; hasKey: boolean; keyUrl: string; note: string; privacy: string }[];
   status: { providers: { id: string; name: string; state: string; served: number; lastProblem: string }[] };
 }
 
 async function openFreeDialog(): Promise<void> {
   const info: FreeInfo = await api.invoke("free:get");
+  freeContained = info.contained;
+  ($("contained") as HTMLInputElement).checked = info.contained;
   const list = $("providers");
   list.textContent = "";
   $("freeError").textContent = info.canEncrypt ? "" : "This computer cannot encrypt saved keys, so keys cannot be stored.";
@@ -324,7 +337,7 @@ $("free").onclick = () => openFreeDialog();
 $("freeCancel").onclick = () => ($("freeDialog").hidden = true);
 $("freeTest").onclick = async () => {
   $("freeError").textContent = "";
-  const saved = await api.invoke("free:save", freeEntries());
+  const saved = await api.invoke("free:save", freeEntries(), ($("contained") as HTMLInputElement).checked);
   if (saved.error && !/at least one/.test(saved.error)) return void ($("freeError").textContent = saved.error);
   for (const box of document.querySelectorAll<HTMLElement>("#providers .outcome")) box.textContent = "Testing...";
   const results: Record<string, string> = await api.invoke("free:test");
@@ -341,11 +354,18 @@ $("freeTest").onclick = async () => {
 };
 $("freeForm").onsubmit = async (event) => {
   event.preventDefault();
-  const saved = await api.invoke("free:save", freeEntries());
+  const before = freeContained;
+  const saved = await api.invoke("free:save", freeEntries(), ($("contained") as HTMLInputElement).checked);
   if (saved.error) return void ($("freeError").textContent = saved.error);
   workspace = saved;
+  freeContained = ($("contained") as HTMLInputElement).checked;
   $("freeDialog").hidden = true;
   render();
+  showFreeHint();
+  const free = workspace.profiles.find((p) => p.kind === "free");
+  if (free && before !== freeContained && started.has(free.id)) {
+    alert("The container setting changed. Restart the free terminal (↻) for it to take effect.");
+  }
 };
 /** Each Claude profile's title bar says which account it is signed in with, and warns about duplicates. */
 function showNetwork(): void {
@@ -815,7 +835,9 @@ new ResizeObserver(() => resizeMap()).observe(canvas);
 (async () => {
   workspace = await api.invoke("workspace:get");
   resizeMap();
+  freeContained = (await api.invoke("free:get")).contained;
   render();
+  showFreeHint();
   await refreshAccounts();
   offerFoundFolders();
   showSorting(await api.invoke("sorting:get"));

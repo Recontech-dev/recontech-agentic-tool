@@ -18,7 +18,7 @@ Agentic Lazy Tool puts your Claude Code terminals side by side in one window and
 - **Resume anything:** click a past session and press **Resume** to continue it in the right terminal and folder.
 - **Search everything:** find any earlier decision or session across all projects.
 - **Smart sorting (optional):** a local model labels every session as bug fix, feature, refactor, setup and deploy, tests, docs or question, and spots work that was left unfinished. Claude is told about unfinished work first, and the graph can show only unfinished sessions or one kind of work.
-- **Free models when you hit a limit:** a special terminal runs Claude Code on free AI providers (Gemini, OpenRouter, Cerebras, Groq) with your own free keys and the same brain. When a Claude profile reaches its usage limit, a bar offers to open it.
+- **Free models when you hit a limit:** a special terminal runs Claude Code on free AI providers (Gemini, OpenRouter, Cerebras, Groq) with your own free keys. It is kept in a container, so the free AI only sees what you hand it. When a Claude profile reaches its usage limit, a bar offers to open it.
 - **Works offline:** an Ollama profile runs Claude Code on a model on your own computer, with the same brain, when there is no internet.
 - **Private by design:** everything stays on your computer, secrets are masked before anything is stored, and the app never sees your Claude sign-in.
 
@@ -75,7 +75,20 @@ For when a Claude profile reaches its usage limit and you want to keep going.
 1. Click **Free models** at the top and paste a free API key for at least one provider. Each row says where to get the key. Google Gemini has the most generous free tier and is the best first choice.
 2. Click **Test keys** to check each key and model name, then **Save and enable**. A **Free models** terminal appears. It does not start by itself.
 3. When a Claude terminal prints that its limit was reached, a bar appears at the top: click **Open the Free terminal**. You can also start it any time with its **Start the free terminal** button.
-4. Work as usual. It is the real Claude Code with the same brain, so it knows the project's notes and past sessions; only the model answering is different.
+4. Give it what it should work on: type or paste into it, or have another terminal send it a message ("ask the Free models terminal to draft unit tests for this function: ..."). It answers back the same way.
+
+### The container
+
+By default the free terminal is kept in a container, so a free AI provider only ever sees what you deliberately hand it:
+
+- It starts in its own empty folder, not in your project, and its file tools cannot leave that folder.
+- It cannot run commands, fetch web pages or search the web.
+- It has no access to the brain's memory and cannot read other terminals' screens.
+- It can do two things with other terminals: see their names and exchange messages. What another terminal chooses to send it is the only project information it gets.
+
+The container is built from Claude Code's restricted mode plus the app's own limits. It is a strong fence inside the app, not an operating-system sandbox.
+
+You can turn the container off in **Free models** if you want free models to work directly in your project with full access. The terminal's title bar then says so in orange.
 
 How it works and what to expect:
 
@@ -83,7 +96,7 @@ How it works and what to expect:
 - Free models are weaker and slower than Claude, and their free tiers are limited. Claude Code sends long instructions with every request, which some free tiers (Groq's in particular) cannot fit.
 - Model names and free tiers change often. If **Test keys** reports a model problem, type a current model name from the provider's site into the model box.
 - Your keys are encrypted with your operating system's own protection and stored only on your computer. They are sent only to their own provider.
-- Your messages and code in that terminal go to the free provider that answers, under that provider's terms, not to Anthropic.
+- Whatever reaches that terminal goes to the free provider that answers, under that provider's terms, not to Anthropic. With the container on, that is only what you type, paste or send it.
 
 ## Privacy
 
@@ -94,11 +107,13 @@ How it works and what to expect:
 | Terminal | Where its requests go | What the provider may do with them |
 |---|---|---|
 | Claude profile | Anthropic, through Claude Code | Governed by your Claude plan and its privacy settings |
-| Free models | The free provider that answers | Governed by that provider's terms; free tiers often allow more use of your data |
+| Free models (in its container, the default) | The free provider that answers | It only receives what you type, paste or send to that terminal; that is governed by the provider's terms |
+| Free models (container off) | The free provider that answers | It receives everything the terminal works on in your project; free tiers often allow more use of your data |
 | Ollama (offline) | Nowhere; it runs on your computer | Nothing leaves the computer |
 
 What the app does about it:
 
+- The free terminal is kept in a container by default: no project files, no memory, no reading of other terminals.
 - The Free models dialog shows each provider's privacy note, and the free terminal asks for confirmation before it first starts.
 - Requests to OpenRouter carry the instruction to use only providers that do not keep or train on your data.
 - API keys are encrypted with your operating system's own protection, and secrets are masked before anything is stored in memory.

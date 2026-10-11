@@ -20,6 +20,8 @@ export interface Hooks {
   read(name: string, lines: number): Promise<string>;
   /** Type a message into a terminal as a prompt. */
   deliver(name: string, text: string): void;
+  /** True for a terminal kept in a container, which may not read the other terminals' screens. */
+  contained?(name: string): boolean;
 }
 
 /** How many messages one terminal may send another in a window of time, so two sessions cannot loop forever. */
@@ -91,6 +93,9 @@ export class Control {
     if (req.url === "/terminals") return this.reply(res, 200, { terminals: this.hooks.terminals() });
 
     if (req.url === "/read") {
+      if (this.hooks.contained?.(String(body.from ?? ""))) {
+        return this.reply(res, 403, { error: "This terminal is kept in a container and cannot read other terminals. Another terminal can send it what it needs." });
+      }
       const target = this.find(body.name);
       if (!target) return this.reply(res, 404, { error: `There is no terminal named "${body.name}". Terminals: ${names()}` });
       if (!target.running) return this.reply(res, 409, { error: `${target.name}'s terminal has not been started.` });

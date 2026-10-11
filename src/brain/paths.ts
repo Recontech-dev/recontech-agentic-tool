@@ -11,6 +11,8 @@ export const memoryDir = () => path.join(home(), "memory");
 export const sessionIndexFile = () => path.join(home(), "brain", "sessions.json");
 export const workspaceFile = () => path.join(home(), "workspace.json");
 export const profilesDir = () => path.join(home(), "profiles");
+/** The empty folder a contained free terminal works in, away from every project. */
+export const containerDir = () => path.join(home(), "free-container");
 
 // Claude Code keeps its login and its session transcripts here unless CLAUDE_CONFIG_DIR says otherwise.
 // ALT_CLAUDE_HOME exists for tests, so they never read the real sessions on the machine.

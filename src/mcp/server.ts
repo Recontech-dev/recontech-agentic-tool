@@ -14,6 +14,16 @@ const PROTOCOL_VERSION = "2025-06-18";
 /** The name of the terminal this server belongs to, and where the app's terminal link listens. */
 const SELF = process.env.ALT_PROFILE || "";
 const CONTROL_FILE = process.env.ALT_CONTROL || "";
+/** A contained terminal (the free one, by default) gets no memory and cannot read other terminals. */
+const CONTAINED = process.env.ALT_CONTAINED === "1";
+const CONTAINED_TOOLS = new Set(["list_terminals", "message_terminal"]);
+
+const CONTAINED_INSTRUCTIONS =
+  "This session runs in a container inside the Agentic Lazy Tool app: it has its own empty folder and no access to the user's " +
+  "projects, memory or other terminals' screens. Work only with what the user or another terminal gives you in a message. " +
+  "A message from another terminal arrives as a prompt starting with [Message from the \"<name>\" terminal]; do what it asks and " +
+  "send your answer back with message_terminal to the terminal it came from. Use list_terminals to see the terminals' names. " +
+  "Keep messages short and stop once the question is settled.";
 
 const INSTRUCTIONS =
   "This server is the user's long-term memory across all their Claude Code sessions and projects, and the link to the other " +
@@ -105,6 +115,7 @@ async function control(route: string, body: object): Promise<any> {
 }
 
 async function runTool(name: string, args: any): Promise<string> {
+  if (CONTAINED && !CONTAINED_TOOLS.has(name)) throw new Error("Not available: this terminal is kept in a container.");
   const folder = typeof args?.project === "string" && args.project ? args.project : process.cwd();
   switch (name) {
     case "remember": {
@@ -131,7 +142,7 @@ async function runTool(name: string, args: any): Promise<string> {
         .join("\n");
     }
     case "read_terminal": {
-      const { name: found, text } = await control("/read", { name: args?.name, lines: args?.lines });
+      const { name: found, text } = await control("/read", { from: SELF, name: args?.name, lines: args?.lines });
       return `Screen of the "${found}" terminal:\n${text || "(nothing on screen yet)"}`;
     }
     case "message_terminal": {
@@ -153,12 +164,12 @@ async function handle(message: any): Promise<object | null> {
         protocolVersion: params?.protocolVersion ?? PROTOCOL_VERSION,
         capabilities: { tools: {} },
         serverInfo: { name: "agentic-lazy-tool-brain", version: "0.4.0" },
-        instructions: INSTRUCTIONS,
+        instructions: CONTAINED ? CONTAINED_INSTRUCTIONS + (SELF ? ` This terminal is called "${SELF}".` : "") : INSTRUCTIONS,
       });
     case "ping":
       return reply({});
     case "tools/list":
-      return reply({ tools: TOOLS });
+      return reply({ tools: CONTAINED ? TOOLS.filter((t) => CONTAINED_TOOLS.has(t.name)) : TOOLS });
     case "tools/call":
       try {
         return reply({ content: [{ type: "text", text: await runTool(params?.name, params?.arguments) }] });

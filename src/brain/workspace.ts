@@ -36,6 +36,11 @@ export interface Workspace {
   folder: string;
   profiles: Profile[];
   layout: "grid" | "tabs";
+  /**
+   * Whether the Free models terminal is kept in a container: its own empty folder, no project files,
+   * no memory, no reading of other terminals. On unless the user turns it off.
+   */
+  freeContained?: boolean;
   /** Existing Claude Code folders the user chose not to add, so the app does not offer them again. */
   dismissedFolders?: string[];
   /** Smart sorting (Laya) is off unless the user turns it on; its model is stored in modelDir. */
@@ -140,6 +145,11 @@ export function addProfile(workspace: Workspace, request: NewProfile | string): 
 }
 
 export const FREE_PROFILE_ID = "free-models";
+
+/** True when this profile's terminal must be kept away from the user's projects and memory. */
+export function isContained(workspace: Workspace, profile: Profile | undefined): boolean {
+  return profile?.kind === "free" && workspace.freeContained !== false;
+}
 
 /** Add the special Free models terminal if it is not there yet. */
 export function enableFreeProfile(workspace: Workspace): void {
