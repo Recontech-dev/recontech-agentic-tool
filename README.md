@@ -1,13 +1,27 @@
 # Agentic Lazy Tool
 
-A workspace for Claude Code with a shared brain. Run several Claude Code terminals side by side, one per profile, and let all of them read and write one local memory that is built from your past sessions. Nothing is forgotten when a session ends.
+**One window for all your Claude Code work, with a memory that never forgets.**
 
-- **Claude Code side by side:** up to 6 terminals, each running the real Claude Code with its own sign-in (for example Personal and Work). Grid or tabs.
-- **Shared brain:** every terminal connects to the same local memory through MCP. A fact one session learns, the next session knows.
-- **Past sessions become memory:** Claude Code saves every session on your disk. The brain reads them and keeps each one's title, folder, your prompts and its main topics, even after Claude Code's own files are gone.
-- **See your brain:** a live network on the right side of the window shows your projects, past sessions (coloured by profile), notes and the topics that link them. What is open now is green. Click a past session and press **Resume** to continue it in its terminal.
-- **Works offline:** an Ollama profile runs Claude Code on a model on your computer, with the same brain, when there is no internet.
-- **Private:** everything stays on your computer. The app never sees your Claude sign-in; Claude Code handles it, as usual.
+## What it is for
+
+Every Claude Code session starts from zero. What you decided yesterday, why a bug happened last week, how a project is deployed: it is all in old sessions that the next session cannot see. And if you use more than one Claude Code sign-in, or need to keep working without internet, you juggle several terminals by hand.
+
+Agentic Lazy Tool puts your Claude Code terminals side by side in one window and connects all of them to a shared local **brain**. The brain is built from your past sessions and the notes Claude saves while it works, so every new session can pick up where the last one left off.
+
+## Main features
+
+- **Claude Code side by side:** up to 6 terminals in a grid or tabs, each running the real Claude Code with its own sign-in (for example Personal and Work).
+- **Shared brain:** every terminal connects to the same local memory. A fact one session learns, the next session knows, across profiles and projects.
+- **Past sessions become memory:** the brain reads the sessions Claude Code saves on your disk and keeps each one's title, project, your prompts and its main topics, even after Claude Code's own files are gone.
+- **See your brain:** a live network beside the terminals shows your projects, past sessions (coloured by profile), notes and the topics that link them. It arranges itself so nothing overlaps and zooms to fit as it grows.
+- **Resume anything:** click a past session and press **Resume** to continue it in the right terminal and folder.
+- **Search everything:** find any earlier decision or session across all projects.
+- **Works offline:** an Ollama profile runs Claude Code on a model on your own computer, with the same brain, when there is no internet.
+- **Private by design:** everything stays on your computer, secrets are masked before anything is stored, and the app never sees your Claude sign-in.
+
+![Three Claude Code profiles side by side with the brain graph](docs/screenshot.png)
+
+*The screenshot uses made-up demo projects.*
 
 ## Install (Windows)
 

@@ -34,7 +34,8 @@
   .panel { min-width:0; min-height:0; display:flex; flex-direction:column; background:#000; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
   .bar { display:flex; align-items:center; gap:8px; padding:4px 8px; background:#0d1015; border-bottom:1px solid var(--line); color:var(--dim); }
   .bar .dot { width:9px; height:9px; border-radius:50%; flex:none; }
-  .bar .name { color:var(--text); font-weight:600; }
+  .bar .name { color:var(--text); font-weight:600; white-space:nowrap; }
+  .bar .hint { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1; }
   .term { flex:1; min-height:0; padding:4px 6px; }
   .xterm-viewport::-webkit-scrollbar { width:8px; background:transparent; }
   .xterm-viewport::-webkit-scrollbar-thumb { background:#2f3845; border-radius:4px; }

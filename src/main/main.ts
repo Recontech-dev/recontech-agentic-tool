@@ -122,7 +122,7 @@ function createWindow(): void {
       setTimeout(async () => {
         fs.writeFileSync(shot, (await win!.webContents.capturePage()).toPNG());
         app.quit();
-      }, 7000);
+      }, Number(process.env.ALT_SCREENSHOT_DELAY || 7000));
     }
   });
   win.loadFile(path.join(__dirname, "..", "..", "static", "index.html"));
