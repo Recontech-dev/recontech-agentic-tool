@@ -18,6 +18,8 @@ Recontech Agentic Tool puts your Claude Code terminals side by side in one windo
 - **Resume anything:** click a past session and press **Resume** to continue it in the right terminal and folder.
 - **Search everything:** find any earlier decision or session across all projects, by words or, with a small local model, by meaning.
 - **Roles:** make one terminal the Manager, others the Builder, Reviewer or Tester, and they hand work to each other. Make roles of your own in the role manager.
+- **Hey Recon:** turn on the voice assistant, say "Hey Recon" and your request, and it goes to your Manager terminal. Speech is recognised on your computer.
+- **Token usage:** tokens used this week, this month, this year and in total above the graph, and under every terminal its own weekly usage, its current 5-hour session and whether Claude Code said it reached a limit.
 - **Project kits:** the app recognises website, mobile, Unity and Godot projects and gives Claude the right working rules for each.
 - **Team memory:** write a project's notes to a file in the project so teammates can import them.
 - **Unfinished work list:** what was left unfinished, with one click to resume.
@@ -76,6 +78,25 @@ Role names must be unique, ignoring case, and cannot repeat a built-in name. Ins
 
 A new or changed role takes effect when that terminal restarts (↻); the app tells you which running terminals are affected.
 
+### Hey Recon
+
+Click **🎙 Hey Recon** in the header to turn on the voice assistant; click it again (or ✕ in its panel) to turn it off. While it is on, the microphone listens for the words "Hey Recon". Say them, then your request, in one breath or after a pause: "Hey Recon, ask the Builder to add a logout button". The request goes to the terminal with the **Manager** role, which answers back. The answer is read out and shown in the Hey Recon panel, and it waits for you to confirm before anything goes into a terminal.
+
+- One terminal needs the Manager role and must be running. Talking to the Manager terminal itself is not needed; type to it.
+- Speech is turned into text on your computer with a small Whisper model, and nothing is recorded while no one is speaking. Only the request itself reaches Claude, as a message to the Manager.
+
+### Token usage
+
+**Tokens used**, above the graph, shows how many Claude tokens all your Claude profiles used **this week** (from Monday), **this month**, **this year** and in **total**. Point at a tile for input, output and cache figures; most of a total is earlier conversation that Claude reads back from its cache on each turn. Click the heading to fold the panel away.
+
+Under each Claude terminal, a thin bar shows that terminal's own usage:
+
+- **Week:** its tokens this week.
+- **Session:** its tokens in the current 5-hour session window and when the window ends. Claude's session limits count in windows like this one; the window is estimated from message times.
+- **Limit:** **Within limit**, **Near limit** or **Limit reached**, with the reset time, as Claude Code last printed in that terminal. It clears once Claude answers there again.
+
+The numbers come from the usage figures Claude Code writes into its own session files on your computer, counted once each, and nothing is sent anywhere. Your plan's actual limits are not stored on your computer, so the app can show how much was used and what Claude Code said, but not a percentage of your limit. Ollama and Free models terminals are not counted.
+
 ### Project kits
 
 Next to the folder button is the **Kit** menu. The app looks at the files in your project folder and picks a kit: **Website**, **Mobile app**, **Unity game**, **Godot game**, or **General**. A kit is a short set of working rules for that kind of project. The Unity kit, for example, tells Claude to check the Unity and package versions before using an API, never to hand-edit scene, prefab or meta files, and to say what to do in the Editor to test a change. You can pick a different kit by hand; the choice is remembered per project and applies when a terminal starts.
@@ -91,13 +112,14 @@ Click **Team** to share what the brain knows about a project:
 ### Notes and unfinished work
 
 - Type in **Add a note about this project** under the graph to save a note yourself. Click a note in the graph and press **Delete this note** to remove it. The same fact is not stored twice.
+- Click a past session in the graph and press **Remove from brain** to take it out of the graph and search. Claude Code's own session file is kept, and the session comes back if you continue it.
 - With Smart sorting on, **Unfinished work** above the graph lists the sessions that ended unfinished, this project's first, each with a **Resume** button.
 
 ### Comfort
 
 - **A−** and **A+** change the terminal text size.
 - Drag the line between the terminals and the brain to resize the brain panel.
-- **Ctrl+Alt+1** to **Ctrl+Alt+6** switch to a terminal; **Ctrl+Alt+B** shows or hides the brain.
+- **Ctrl+Alt+1** to **Ctrl+Alt+6** switch to a terminal; **Ctrl+Alt+B** shows or hides the brain. AltGr does not count as Ctrl+Alt here, so it still types characters such as { and [ on European keyboards.
 - When a newer version is published, a bar at the top offers the download page. The check asks GitHub only for the latest version number.
 
 ### Terminals working together
