@@ -1499,7 +1499,18 @@ function showUsageBars(): void {
     const session = usage?.session
       ? part("session", `Session ${shortCount(usage.session.tokens.total)}${budget.session ? ` of ${shortCount(budget.session)}` : ""}`, `Session ${shortCount(usage.session.tokens.total)}`)
       : part("session", "No session in progress", "No session");
-    if (budget.session) session.prepend(meter(usage?.session?.tokens.total ?? 0, budget.session));
+    // Every Claude terminal shows a session bar: toward the session budget when one is set, otherwise
+    // through the 5-hour window by time, so the bar is there before any budget is written.
+    const sessionMeter = budget.session
+      ? meter(usage?.session?.tokens.total ?? 0, budget.session)
+      : meter(usage?.session ? Math.max(0, now - usage.session.start) : 0, usage?.session ? usage.session.end - usage.session.start : 1);
+    sessionMeter.title = budget.session ? "Session tokens toward your session budget" : "Time used of the 5-hour session window. Click to set a session budget in tokens instead.";
+    sessionMeter.onclick = () => {
+      if ($("brain").hidden) $("toggle").click();
+      ($("usage") as HTMLDetailsElement).open = true;
+      ($("budgetSession") as HTMLInputElement).focus();
+    };
+    session.prepend(sessionMeter);
     if (usage?.session) {
       const until = document.createElement("span");
       until.className = "until";
