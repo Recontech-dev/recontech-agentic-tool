@@ -415,6 +415,15 @@ async function voiceStart(): Promise<boolean> {
   api.send("voice:listening", true);
   voiceWatchTimer = window.setInterval(voiceWatch, VOICE_WATCH_MS);
   orbStart();
+  // Chromium lists the installed voices only once speech has been used, so the first answer would be
+  // read in the default voice instead of Recon's. A silent, empty sentence loads the list now.
+  try {
+    const warmUp = new SpeechSynthesisUtterance(" ");
+    warmUp.volume = 0;
+    speechSynthesis.speak(warmUp);
+  } catch {
+    // speech synthesis is unavailable; answers are still shown as text
+  }
   // The speech model loads on its first request, which would otherwise make the first "Recon" wait
   // seconds for it. A tenth of a second of silence starts it now; whatever it hears there is dropped.
   void api.invoke("mic:transcribe", Array.from({ length: 1600 }, () => 0)).catch(() => {});
