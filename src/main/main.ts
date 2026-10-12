@@ -12,7 +12,7 @@ import * as files from "../brain/files";
 import { KITS, allRoles, detectKit, isBuiltInRole, kitById, roleById, standingPrompt } from "../brain/kits";
 import { claudeCommand, ollamaModels, online, profileEnv, signedInAs } from "../brain/launch";
 import { exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
-import { cleanupTranscript } from "../brain/speech";
+import { afterWakeWord, cleanupTranscript } from "../brain/speech";
 import { addNote, removeNote } from "../brain/store";
 import { containerDir, earlierHomes, home } from "../brain/paths";
 import { moveData } from "../brain/relocate";
@@ -114,20 +114,20 @@ const control = new Control({
   deliver: (name, text) => {
     const profile = workspace.profiles.find((p) => p.name === name);
     if (!profile || !terminals.has(profile.id)) return "sent";
-    // While the user is typing there, the message waits, and so does any message after it, to keep their order.
-    if (inbox.busy(profile.id) || inbox.waiting(profile.id)) {
-      inbox.hold(profile.id, text);
-      send("term:waiting", profile.id, inbox.waiting(profile.id));
-      return "queued";
+    // A reply to a Hey Recon voice request waits for the user to confirm, instead of going straight into the terminal.
+    if (voicePending.delete(profile.id)) {
+      send("voice:reply", profile.id, text.replace(/^\[Message from "[^"]*" terminal[^\]]*\]\s*/, ""));
+      return "sent";
     }
-    writeMessage(profile.id, text);
-    return "sent";
+    return sendToProfile(profile, text);
   },
 });
 
 /** Messages from other terminals that wait while the user is typing in the terminal they are for. */
 const inbox = new Inbox();
 const INBOX_CHECK_MS = 500;
+/** Terminals whose next incoming message is a Hey Recon voice reply, held for the user to confirm instead of typed in. */
+const voicePending = new Set<string>();
 
 /** Type a message from another terminal into a terminal as a prompt. */
 function writeMessage(id: string, text: string): void {
@@ -137,6 +137,19 @@ function writeMessage(id: string, text: string): void {
   term.write(`\x1b[200~${text.replace(/\x1b/g, "")}\x1b[201~`);
   setTimeout(() => terminals.get(id) === term && term.write("\r"), 400);
   send("term:message", id);
+}
+
+/** Send a message to a profile's terminal, or hold it while its user is typing. */
+function sendToProfile(profile: ws.Profile, text: string): "sent" | "queued" {
+  if (!terminals.has(profile.id)) return "sent";
+  // While the user is typing there, the message waits, and so does any message after it, to keep their order.
+  if (inbox.busy(profile.id) || inbox.waiting(profile.id)) {
+    inbox.hold(profile.id, text);
+    send("term:waiting", profile.id, inbox.waiting(profile.id));
+    return "queued";
+  }
+  writeMessage(profile.id, text);
+  return "sent";
 }
 
 /** Send the next waiting message to a terminal once it is free, or right away when the user asks. */
@@ -673,6 +686,28 @@ ipcMain.handle("sorting:get", () => sortingStatus);
 ipcMain.handle("sorting:toggle", () => toggleSorting());
 ipcMain.handle("mic:get", () => transcriberStatus);
 ipcMain.handle("mic:transcribe", (_event, pcm: number[]) => transcribe(Array.isArray(pcm) ? pcm.map(Number) : []));
+
+/** Whether a transcript starts with "Hey Recon", and what was said after it, if anything. */
+ipcMain.handle("voice:wake", (_event, text: string) => {
+  const after = afterWakeWord(String(text ?? ""));
+  return { matched: after !== null, after: after ?? "" };
+});
+
+/** Hands a Hey Recon request to whichever terminal has the Manager role; its reply waits for the user to confirm. */
+ipcMain.handle("voice:ask", (_event, anchorId: string, command: string) => {
+  const anchor = workspace.profiles.find((p) => p.id === String(anchorId));
+  const manager = workspace.profiles.find((p) => p.role === "manager");
+  if (!anchor) return { error: "That terminal is gone." };
+  if (!manager) return { error: "No terminal has the Manager role yet. Open Roles and give one terminal the Manager role." };
+  if (manager.id === anchor.id) return { error: `${manager.name} already has the Manager role; just type to it.` };
+  if (!terminals.has(manager.id)) return { error: `${manager.name}'s terminal has not been started.` };
+  const text = cleanupTranscript(String(command ?? ""));
+  if (!text) return { error: "Didn't catch a request." };
+  voicePending.add(anchor.id);
+  setTimeout(() => voicePending.delete(anchor.id), 5 * 60_000);
+  const how = sendToProfile(manager, `[Message from "${anchor.name}" terminal, heard by voice] ${text} When you have an answer, send it back with message_terminal to "${anchor.name}".`);
+  return { manager: manager.name, queued: how === "queued" };
+});
 ipcMain.handle("session:resume", (_event, ref: { profile: string; id: string; folder: string }) => {
   const profile = workspace.profiles.find((p) => p.name === ref?.profile);
   if (!profile) return { error: `The profile ${ref?.profile} is not in this workspace any more.` };

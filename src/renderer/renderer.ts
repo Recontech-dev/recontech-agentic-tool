@@ -123,6 +123,210 @@ api.on("mic:status", (status: { status: string; percent?: number; message?: stri
   else if (status.status === "error") toast(`Speech-to-text: ${status.message}`, true);
 });
 
+/* ---------- Hey Recon: an always-listening local voice assistant ---------- */
+
+// "armed" is listening for the wake word; "awake" is listening for the request that follows it;
+// "sent" is waiting on the Manager terminal; "reply" is showing its answer for the user to confirm.
+type VoicePhase = "idle" | "armed" | "awake" | "sent" | "reply";
+let voicePhase: VoicePhase = "idle";
+/** The terminal that was active when the wake word was heard; the Manager's answer comes back here. */
+let voiceAnchorId = "";
+let voiceStream: MediaStream | null = null;
+let voiceCtx: AudioContext | null = null;
+let voiceAnalyser: AnalyserNode | null = null;
+let voiceWatchTimer = 0;
+let voiceRecorder: MediaRecorder | null = null;
+let voiceChunks: BlobPart[] = [];
+let voiceRecording = false;
+let voiceUtteranceStart = 0;
+let voiceLastLoud = 0;
+let voiceReplyPending: { id: string; text: string } | null = null;
+
+/** Root-mean-square loudness of a frame, 0 (silence) upward; a cheap, fully local stand-in for real VAD. */
+const VOICE_RMS_ON = 0.025;
+const VOICE_RMS_OFF = 0.015;
+const VOICE_SILENCE_MS = 900;
+const VOICE_MAX_UTTERANCE_MS = 12000;
+const VOICE_MIN_UTTERANCE_MS = 250;
+
+function voiceLog(text: string): void {
+  const log = $("voiceLog");
+  const line = document.createElement("div");
+  line.className = "line";
+  line.textContent = text;
+  log.append(line);
+  log.scrollTop = log.scrollHeight;
+  while (log.children.length > 12) log.firstChild?.remove();
+}
+
+function voiceSetState(phase: VoicePhase, label: string): void {
+  voicePhase = phase;
+  const state = $("voiceState");
+  state.textContent = label;
+  state.className = phase === "armed" ? "armed" : phase === "awake" || phase === "sent" ? "sent" : "dim";
+}
+
+function voiceSpeak(text: string): void {
+  try {
+    speechSynthesis.cancel();
+    speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+  } catch {
+    // speech synthesis is unavailable; the panel's text is still there to read
+  }
+}
+
+async function voiceStart(): Promise<void> {
+  if (voicePhase !== "idle") return;
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    return toast("Could not access the microphone. Check this computer's microphone privacy settings.", true);
+  }
+  voiceStream = stream;
+  $("voiceToggle").classList.add("on");
+  $("voice").hidden = false;
+  $("voiceLog").textContent = "";
+  $("voiceReply").hidden = true;
+  voiceLog('Listening for "Hey Recon"…');
+  voiceSetState("armed", "Listening");
+  const ctx = new AudioContext();
+  voiceCtx = ctx;
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  voiceAnalyser = analyser;
+  voiceWatch();
+}
+
+function voiceStop(): void {
+  if (voicePhase === "idle") return;
+  cancelAnimationFrame(voiceWatchTimer);
+  if (voiceRecorder && voiceRecorder.state !== "inactive") { voiceRecorder.onstop = null; voiceRecorder.stop(); }
+  voiceRecorder = null;
+  voiceRecording = false;
+  voiceStream?.getTracks().forEach((track) => track.stop());
+  voiceStream = null;
+  void voiceCtx?.close();
+  voiceCtx = null;
+  voiceAnalyser = null;
+  voiceReplyPending = null;
+  $("voiceToggle").classList.remove("on");
+  $("voice").hidden = true;
+  $("voiceReply").hidden = true;
+  try { speechSynthesis.cancel(); } catch { /* unavailable */ }
+  voicePhase = "idle";
+}
+
+function voiceRms(data: Float32Array): number {
+  let sum = 0;
+  for (const value of data) sum += value * value;
+  return Math.sqrt(sum / data.length);
+}
+
+function voiceWatch(): void {
+  if (voicePhase === "idle" || !voiceAnalyser) return;
+  const data = new Float32Array(voiceAnalyser.fftSize);
+  voiceAnalyser.getFloatTimeDomainData(data);
+  const rms = voiceRms(data);
+  const now = Date.now();
+  if (!voiceRecording) {
+    if (rms > VOICE_RMS_ON && (voicePhase === "armed" || voicePhase === "awake")) voiceBeginUtterance();
+  } else {
+    if (rms > VOICE_RMS_OFF) voiceLastLoud = now;
+    if (now - voiceUtteranceStart > VOICE_MAX_UTTERANCE_MS || now - voiceLastLoud > VOICE_SILENCE_MS) voiceEndUtterance();
+  }
+  voiceWatchTimer = requestAnimationFrame(voiceWatch);
+}
+
+function voiceBeginUtterance(): void {
+  if (!voiceStream) return;
+  voiceRecording = true;
+  voiceUtteranceStart = Date.now();
+  voiceLastLoud = voiceUtteranceStart;
+  voiceChunks = [];
+  const recorder = new MediaRecorder(voiceStream);
+  recorder.ondataavailable = (event) => { if (event.data.size) voiceChunks.push(event.data); };
+  recorder.start();
+  voiceRecorder = recorder;
+}
+
+function voiceEndUtterance(): void {
+  voiceRecording = false;
+  const recorder = voiceRecorder;
+  voiceRecorder = null;
+  if (!recorder) return;
+  const elapsed = Date.now() - voiceUtteranceStart;
+  recorder.onstop = () => {
+    if (elapsed >= VOICE_MIN_UTTERANCE_MS) void voiceHandleUtterance(new Blob(voiceChunks, { type: recorder.mimeType }));
+  };
+  recorder.stop();
+}
+
+async function voiceHandleUtterance(blob: Blob): Promise<void> {
+  if (voicePhase !== "armed" && voicePhase !== "awake") return;
+  try {
+    const pcm = await toPcm16k(blob);
+    const answer = await api.invoke("mic:transcribe", Array.from(pcm));
+    const text = String(answer?.text || "");
+    if (!text) return;
+    if (voicePhase === "armed") {
+      const wake = await api.invoke("voice:wake", text);
+      if (!wake?.matched) return;
+      voiceAnchorId = active;
+      voiceLog('Heard "Hey Recon".');
+      if (wake.after) void voiceAskManager(wake.after);
+      else {
+        voiceSetState("awake", "Listening for your request");
+        voiceSpeak("Yes?");
+      }
+    } else {
+      void voiceAskManager(text);
+    }
+  } catch {
+    // a missed utterance just waits for the next one
+  }
+}
+
+async function voiceAskManager(command: string): Promise<void> {
+  voiceLog(`You: ${command}`);
+  voiceSetState("sent", "Asking the Manager terminal…");
+  const result = await api.invoke("voice:ask", voiceAnchorId, command);
+  if (result?.error) {
+    voiceLog(result.error);
+    voiceSpeak(result.error);
+    voiceSetState("armed", "Listening");
+    return;
+  }
+  voiceSpeak(`Asking ${result.manager}.`);
+}
+
+api.on("voice:reply", (id: string, text: string) => {
+  voiceReplyPending = { id, text };
+  $("voiceReplyText").textContent = text;
+  $("voiceReply").hidden = false;
+  voiceSetState("reply", "Manager answered");
+  voiceLog(`Manager: ${text.length > 140 ? `${text.slice(0, 140)}…` : text}`);
+  voiceSpeak(text);
+});
+
+$("voiceToggle").onclick = () => void (voicePhase === "idle" ? voiceStart() : voiceStop());
+$("voiceClose").onclick = () => voiceStop();
+$("voiceInsert").onclick = () => {
+  if (!voiceReplyPending) return;
+  // Pasted, not submitted: the user still presses Enter themselves, same as a mic push-to-talk prompt.
+  api.send("term:input", voiceReplyPending.id, `\x1b[200~${voiceReplyPending.text}\x1b[201~`);
+  select(voiceReplyPending.id);
+  voiceReplyPending = null;
+  $("voiceReply").hidden = true;
+  voiceSetState("armed", "Listening");
+};
+$("voiceDiscard").onclick = () => {
+  voiceReplyPending = null;
+  $("voiceReply").hidden = true;
+  voiceSetState("armed", "Listening");
+};
+
 function makePanel(profile: Profile): void {
   // `profile` is this call's snapshot; workspace is replaced wholesale after every IPC round trip
   // (a rename included), so anything shown at click time must look the current one up instead.

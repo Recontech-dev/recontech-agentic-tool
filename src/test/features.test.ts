@@ -11,7 +11,7 @@ import { claudeCommand } from "../brain/launch";
 import * as meaning from "../brain/meaning";
 import { SHARE_FILE, exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
 import * as sorting from "../brain/sorting";
-import { cleanupTranscript } from "../brain/speech";
+import { afterWakeWord, cleanupTranscript, matchesWakeWord } from "../brain/speech";
 import { addNote, notes } from "../brain/store";
 import { newer } from "../brain/version";
 import * as ws from "../brain/workspace";
@@ -151,6 +151,26 @@ test("a custom role with curly quotes stays one argument on the PowerShell comma
   const { spawnSync } = await import("node:child_process");
   const out = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { input: command, encoding: "utf8" });
   assert.equal(out.stdout.trim(), "5", `claude --append-system-prompt <text> --mcp-config <file>: ${command}`);
+});
+
+test("the wake word is heard loosely at the start, never in ordinary talk, and the command after it is kept", () => {
+  // As Whisper tiny.en writes "Hey Recon", raw or after cleanupTranscript.
+  for (const heard of ["hey recon", "Hey Recon.", "Hey, Recon!", "hey reckon", "Hey re-con.", "hey re con", "hey rekon",
+    "Hey raccoon.", "hey racoon", "hey con", "Hey Kon.", "HAY RECON", "heh recon", "  um, hey recon", "Uh hey, con.", '"Hey Recon."']) {
+    assert.ok(matchesWakeWord(heard), heard);
+  }
+  for (const heard of ["", "   ", "hey", "hey can you check the build", "Hey, contact the team.", "hey cone", "hey bacon",
+    "hey reconnect the database", "hey recons", "they recon", "okay recon", "recon", "so hey recon", "I said hey recon",
+    "hey you, recon", "heyrecon", "Hey Ron."]) {
+    assert.ok(!matchesWakeWord(heard), heard);
+  }
+  assert.equal(afterWakeWord("hey recon what's the build status"), "what's the build status");
+  assert.equal(afterWakeWord("Hey, Recon. Run the tests."), "Run the tests.");
+  assert.equal(afterWakeWord("hey con, tell the builder to add a logout button"), "tell the builder to add a logout button");
+  assert.equal(afterWakeWord("Hey Recon."), "");
+  assert.equal(afterWakeWord("hey recon"), "");
+  assert.equal(afterWakeWord("hey can you"), null);
+  assert.equal(cleanupTranscript(afterWakeWord("hey reckon um run the the tests")!), "Run the tests.");
 });
 
 /** A stand-in for Ollama's embedding endpoint: texts about the same subject get the same direction. */

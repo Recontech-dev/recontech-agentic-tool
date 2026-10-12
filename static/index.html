@@ -146,6 +146,21 @@
   .todo-item .what { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #noteRow { display:flex; gap:8px; padding:6px 8px; border-top:1px solid var(--line); }
   #noteText { flex:1; min-width:0; }
+  #voiceToggle.on { border-color:var(--accent); color:var(--accent); }
+  #voice { margin:8px; border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:flex; flex-direction:column; gap:6px; max-height:38%; flex:none; }
+  #voice[hidden] { display:none; }
+  #voiceHead { display:flex; align-items:center; gap:8px; }
+  #voiceState { font-size:11.5px; }
+  #voiceState.armed { color:var(--open); }
+  #voiceState.sent { color:var(--topic); }
+  #voiceLog { font-size:12.5px; display:flex; flex-direction:column; gap:4px; overflow:auto; max-height:120px; }
+  #voiceLog .line { color:var(--dim); }
+  #voiceLog .heard { color:var(--text); }
+  #voiceReply { border-top:1px solid var(--line); padding-top:6px; display:flex; flex-direction:column; gap:6px; }
+  #voiceReply[hidden] { display:none; }
+  #voiceReplyText { font-size:12.5px; max-height:120px; overflow:auto; white-space:pre-wrap; }
+  #voiceReply .row { display:flex; gap:8px; justify-content:flex-end; }
+  #voiceHint { font-size:11.5px; }
   #shareDialog { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:20; }
   #shareDialog[hidden] { display:none; }
   #shareDialog > div { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; width:min(520px, calc(100% - 32px)); display:flex; flex-direction:column; gap:10px; }
@@ -194,6 +209,7 @@
   <span id="net" hidden title="Claude cannot be reached. Profiles that run on Ollama keep working.">Offline</span>
   <span class="spacer"></span>
   <button id="roles" title="Make and change terminal roles: the standing job each terminal is given when it starts">Roles</button>
+  <button id="voiceToggle" title="Hey Recon: an always-listening local voice assistant. Say &quot;Hey Recon&quot; to send a spoken request to your Manager terminal; its answer waits for you to confirm before it goes into a terminal.">🎙 Hey Recon</button>
   <button id="share" title="Share this project's memory with teammates through a file in the project">Team</button>
   <button id="smaller" class="icon" title="Smaller terminal text">A−</button>
   <button id="bigger" class="icon" title="Larger terminal text">A+</button>
@@ -277,6 +293,23 @@
       <button id="noteAdd">Add note</button>
     </div>
     <div id="detail" class="dim">Your brain grows as you work: every Claude Code session and every note appears here. Point at a circle to read it.</div>
+    <section id="voice" hidden>
+      <div id="voiceHead">
+        <b>Hey Recon</b>
+        <span id="voiceState" class="dim">Off</span>
+        <span class="spacer"></span>
+        <button id="voiceClose" class="icon" title="Turn off Hey Recon">✕</button>
+      </div>
+      <div id="voiceLog" aria-live="polite"></div>
+      <div id="voiceReply" hidden>
+        <div id="voiceReplyText"></div>
+        <div class="row">
+          <button id="voiceInsert">Insert into terminal</button>
+          <button id="voiceDiscard">Discard</button>
+        </div>
+      </div>
+      <div id="voiceHint" class="dim">Say "Hey Recon", then say what you want. It is sent to whichever terminal has the Manager role; its answer waits here for you to insert or discard, never typed in for you.</div>
+    </section>
   </section>
 </main>
 <div id="dialog" hidden>

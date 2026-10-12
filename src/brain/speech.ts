@@ -20,3 +20,23 @@ export function cleanupTranscript(raw: string): string {
   if (!/[.?!]$/.test(text)) text += ".";
   return text;
 }
+
+/**
+ * "Hey Recon", as Whisper tiny.en tends to hear it: "hey recon", "hey reckon", "hey re-con",
+ * "hey raccoon", or just "hey con". Only at the very start (after a filler or two), and only with an
+ * "o" sound, so ordinary talk such as "hey, can you…" or "hey, contact…" never wakes the assistant.
+ */
+const WAKE_WORD = /^[\s"'.,!?-]*(?:(?:um+|uh+|erm+)\b[\s,.]*)*(?:hey|hay|heh)\b[\s,.!-]*(?:re[\s-]?(?:c|k|ck|kk)on|rac+o+n|con|kon)\b[\s"'.,!?:;-]*/i;
+
+/**
+ * What was said after "Hey Recon": null when the transcript does not start with the wake word, ""
+ * when it was only the wake word (the user is waiting to be asked), otherwise the command that ran on
+ * in the same breath, as Whisper wrote it (pass it through cleanupTranscript before using it).
+ */
+export function afterWakeWord(transcript: string): string | null {
+  const match = WAKE_WORD.exec(String(transcript ?? ""));
+  return match ? transcript.slice(match[0].length).trim() : null;
+}
+
+/** True when a transcript starts with someone saying "Hey Recon" to start the assistant. */
+export const matchesWakeWord = (transcript: string): boolean => afterWakeWord(transcript) !== null;
