@@ -31,9 +31,13 @@ export interface UsageSummary {
   folders: Record<string, FolderUsage>;
 }
 
-/** One Claude Code folder's usage: what a terminal's own bar shows. */
+/** One Claude Code folder's usage (one Claude account): its periods, and what a terminal's own bar shows. */
 export interface FolderUsage {
   week: Tokens;
+  month: Tokens;
+  year: Tokens;
+  all: Tokens;
+  since: number;
   /** The 5-hour session window in progress (Claude's session limit counts per window), or null when none is. */
   session: { start: number; end: number; tokens: Tokens } | null;
   /** When its latest answer was sent (ms), or 0. */
@@ -230,7 +234,7 @@ export function folderUsage(files: { messages: Record<string, Entry> }[], now = 
     for (const entry of sorted) if (entry[0] >= start && entry[0] <= now.getTime()) add(tokens, entry);
     session = { start, end: start + SESSION_MS, tokens };
   }
-  return { week: summarize(files, now).week, session, last: sorted.length ? sorted[sorted.length - 1][0] : 0 };
+  return { ...summarize(files, now), session, last: sorted.length ? sorted[sorted.length - 1][0] : 0 };
 }
 
 const empty = (): Tokens => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 });

@@ -23,7 +23,30 @@
   input:focus { border-color:var(--accent); }
   header { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); }
   header strong { margin-right:4px; }
-  #folder { max-width:420px; overflow:hidden; text-overflow:ellipsis; }
+  /* Top bar groups: joined buttons read as one control, so the bar has a few parts instead of a row of equals. */
+  .hgroup { display:flex; align-items:center; border:1px solid var(--line); border-radius:6px; min-width:0; overflow:hidden; }
+  .hgroup > button, .hgroup > select { border:0; border-radius:0; }
+  .hgroup > * + * { border-left:1px solid var(--line) !important; }
+  .hgroup > button:hover { background:#222a35; }
+  .hgroup.project #kit { border:0; border-radius:0 6px 6px 0; background:transparent; color:var(--dim); }
+  .hgroup.view #smaller, .hgroup.view #bigger { padding:5px 8px; color:var(--dim); }
+  .hgroup.view #fontSize { border-left:0 !important; padding:0 2px; min-width:22px; text-align:center; color:var(--dim); font-size:11.5px; font-variant-numeric:tabular-nums; }
+  .hgroup.view #fontSize + button { border-left:0 !important; }
+  .divider { width:1px; align-self:stretch; margin:2px 2px; background:var(--line); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#0d1015; font-weight:600; }
+  button.primary:hover { filter:brightness(1.1); }
+  .hright { display:flex; align-items:center; gap:8px; margin-left:auto; }
+  /* In a narrower window the app name gives way first; the controls keep their labels. */
+  @media (max-width:1180px) { header > strong { display:none; } }
+  .menuwrap { position:relative; }
+  button.more { font-size:16px; line-height:1; padding:4px 8px; border:1px solid transparent; }
+  button.more[aria-expanded="true"] { border-color:var(--line); color:var(--text); }
+  .menu { position:absolute; right:0; top:calc(100% + 4px); z-index:50; display:flex; flex-direction:column; min-width:160px; padding:4px;
+          background:var(--panel); border:1px solid var(--line); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.4); }
+  .menu[hidden] { display:none; }
+  .menu button { border:0; text-align:left; padding:6px 10px; }
+  .menu button:hover { background:#222a35; }
+  #folder { max-width:320px; overflow:hidden; text-overflow:ellipsis; }
   .spacer { flex:1; }
   main { flex:1; display:flex; min-height:0; }
   #work { flex:3; min-width:0; display:flex; flex-direction:column; }
@@ -61,6 +84,13 @@
   .bar .hint { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1 1 0; }
   .bar button, .bar select { flex:none; }
   .bar .spacer { flex:0 0 0; }
+  /* A narrow terminal drops the account hint and tightens its bar, so the buttons at its end are never cut off. */
+  .panel { container-type:inline-size; }
+  @container (max-width:320px) {
+    .bar { gap:4px; padding:4px 6px; }
+    .bar .hint { display:none; }
+    .bar button.icon { padding:2px 4px; }
+  }
   .term { flex:1; min-height:0; padding:4px 6px; }
   .usagebar { display:flex; gap:10px; align-items:center; padding:2px 8px; font-size:11px; color:var(--dim); background:#0d1015;
               border-top:1px solid var(--line); white-space:nowrap; overflow:hidden; font-variant-numeric:tabular-nums; flex:none; }
@@ -68,10 +98,10 @@
   .usagebar > span { overflow:hidden; text-overflow:ellipsis; }
   .usagebar .limit { margin-left:auto; flex:none; max-width:55%; }
   .usagebar .week { flex:none; }
-  /* Narrower terminals drop the window's end time, then switch to the short wordings, rather than cutting words off. */
+  /* The reset time always shows; narrower terminals switch to the short wordings rather than cutting words off. */
+  .usagebar .until { flex:none; margin-left:-6px; }
   .usagebar { container-type:inline-size; }
   .usagebar .short { display:none; }
-  @container (max-width:460px) { .usagebar .until { display:none; } }
   @container (max-width:400px) { .usagebar .long { display:none; } .usagebar .short { display:inline; } }
   .usagebar .limit::before { content:"●"; margin-right:4px; }
   .usagebar .limit.ok::before { color:var(--open); }
@@ -83,13 +113,25 @@
   .usagebar .meter.near i { background:var(--topic); }
   .usagebar .meter.over i { background:#ff9b9b; }
   @container (max-width:400px) { .usagebar .meter { width:36px; margin-right:4px; } }
+  /* One row per Claude account: plan limits from Anthropic, then this computer's tokens per period. */
+  #usageAccounts { width:calc(100% - 16px); margin:0 8px 8px; border-collapse:collapse; font-size:11.5px; font-variant-numeric:tabular-nums; table-layout:fixed; }
+  #usageAccounts th { font-weight:normal; color:var(--dim); text-align:right; padding:2px 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #usageAccounts td { text-align:right; padding:3px 4px; border-top:1px solid var(--line); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #usageAccounts th:first-child, #usageAccounts td.who { text-align:left; width:26%; }
+  #usageAccounts td.limit .meter { display:inline-block; width:28px; height:5px; margin-right:4px; vertical-align:middle; border-radius:3px; background:var(--line); overflow:hidden; }
+  #usageAccounts td.limit .meter i { display:block; height:100%; background:var(--accent); }
+  #usageAccounts td.limit .meter.near i { background:var(--topic); }
+  #usageAccounts td.limit .meter.over i { background:#ff9b9b; }
+  @container (max-width:400px) { #usageAccounts td.limit .meter { display:none; } #usageAccounts th:nth-child(6), #usageAccounts td:nth-child(6) { display:none; } }
   #usageBudget { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; padding:0 8px 8px; font-size:11.5px; color:var(--dim); }
   #usageBudget label { display:flex; gap:5px; align-items:center; }
   #usageBudget input { width:72px; padding:2px 6px; font-size:11.5px; }
   .xterm-viewport::-webkit-scrollbar { width:8px; background:transparent; }
   .xterm-viewport::-webkit-scrollbar-thumb { background:#2f3845; border-radius:4px; }
   /* A quarter of the width until the user drags the divider: on a first run the graph is still empty. */
-  #brain { flex:1; min-width:0; max-width:460px; display:flex; flex-direction:column; border-left:1px solid var(--line); }
+  #brain { flex:1; min-width:240px; max-width:460px; display:flex; flex-direction:column; border-left:1px solid var(--line); }
+  /* In a very short window the parts below still fit by scrolling the column, never by cutting them off. */
+  #brain { overflow:hidden auto; }
   #brain[hidden] { display:none; }
   /* Search on its own row, then the session filter and Smart sorting side by side at equal width and
      height, so neither ends up alone on a row; a brain panel dragged wide enough fits all three in one. */
@@ -104,18 +146,20 @@
   }
   #sortingState { color:var(--dim); font-size:12px; margin:-4px 8px 6px; }
   #sortingState:empty { display:none; }
-  #results { max-height:30%; overflow:auto; padding:0 8px; }
+  /* The results, the picture and the text below share the column: each gives up height down to a floor,
+     so search results never squeeze the picture away and the picture never hides the results. */
+  #results { max-height:30%; flex:0 1 auto; min-height:64px; overflow:auto; padding:0 8px; }
   #results:empty { display:none; }
   .result { padding:6px 8px; border:1px solid var(--line); border-radius:6px; margin-bottom:6px; overflow-wrap:anywhere; }
   .result .meta { color:var(--dim); font-size:12px; }
-  #map { flex:1; min-height:0; width:100%; display:block; cursor:grab; }
+  #map { flex:1; min-height:120px; width:100%; display:block; cursor:grab; }
   #legend { display:flex; flex-wrap:wrap; gap:4px 12px; padding:6px 10px; font-size:12px; color:var(--dim); border-top:1px solid var(--line); }
   #legend span::before { content:""; display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; background:var(--c); }
   #legend span.ring::before { background:transparent; border:2px dashed var(--topic); width:6px; height:6px; }
-  #detail { height:110px; overflow:auto; padding:8px 10px; background:var(--panel); border-top:1px solid var(--line); white-space:pre-wrap; overflow-wrap:anywhere; }
+  #detail { flex:0 1 110px; min-height:52px; overflow:auto; padding:8px 10px; background:var(--panel); border-top:1px solid var(--line); white-space:pre-wrap; overflow-wrap:anywhere; }
   /* In a short window the picture needs the height more than the text boxes around it do. */
   @media (max-height:720px) {
-    #detail { height:72px; padding:6px 10px; }
+    #detail { flex-basis:72px; padding:6px 10px; }
     #legend { gap:2px 10px; padding:4px 10px; font-size:11px; }
     #noteRow { padding:4px 8px; }
   }
@@ -143,13 +187,14 @@
   .good { color:var(--open); } .bad { color:#ff7b7b; }
   .privacy { border:1px solid var(--topic); border-radius:6px; padding:8px 10px; }
   .provider .policy { grid-column:1 / -1; font-size:12px; color:var(--topic); }
+  .provider a { color:var(--accent); }
   .bar-note { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#1f2a3a; border-bottom:1px solid var(--line); }
   .bar-note[hidden] { display:none; }
   #updateProgress { width:160px; height:8px; accent-color:var(--accent); }
   #updateProgress[hidden], #updateGo[hidden] { display:none; }
   select.small { font:inherit; font-size:12px; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:2px 4px; max-width:110px; }
   #kit { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 6px; }
-  #files { flex:0 0 260px; min-width:0; display:flex; flex-direction:column; border-right:1px solid var(--line); background:var(--panel); }
+  #files { flex:0 1 260px; min-width:180px; display:flex; flex-direction:column; border-right:1px solid var(--line); background:var(--panel); }
   #files[hidden] { display:none; }
   #filesHead { display:flex; align-items:center; gap:4px; padding:6px 6px 6px 10px; border-bottom:1px solid var(--line); }
   #filesTitle { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
@@ -171,6 +216,8 @@
   /* --editor-share is the editor's part of the height, set by dragging the bar between them. */
   #work.editing #editor { flex:var(--editor-share, 0.6) 1 0; margin-bottom:0; }
   #work.editing #panels { flex:calc(1 - var(--editor-share, 0.6)) 1 0; }
+  /* In a short window the editor gives way first, so the terminals keep a few usable lines. */
+  #work.editing #panels { min-height:min(200px, 40%); }
   #editorSplit { height:5px; margin:2px 8px 0; cursor:row-resize; background:transparent; flex:none; border-radius:3px; }
   #editorSplit:hover, #editorSplit.dragging { background:var(--accent); }
   #editorSplit[hidden] { display:none; }
@@ -227,12 +274,17 @@
     .usage-tile .value { font-size:14px; line-height:1.2; }
     #usage summary { padding:4px 8px; }
   }
-  #voice { margin:8px; border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:flex; flex-direction:column; gap:6px; max-height:38%; flex:none; }
+  #voice { margin:8px; border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:flex; flex-direction:column; gap:6px; max-height:38%; flex:0 1 auto; min-height:64px; overflow:auto; }
   #voice[hidden] { display:none; }
   #voiceHead { display:flex; align-items:center; gap:8px; }
-  #voiceState { font-size:11.5px; }
+  #voiceState { font-size:11.5px; border:0; padding:0 2px; }
   #voiceState.armed { color:var(--open); }
-  #voiceState.sent { color:var(--topic); }
+  #voiceState.talk { color:var(--accent); font-weight:600; }
+  #voiceState.talk::before { content:"●"; margin-right:4px; animation:voicePulse 1.2s ease-in-out infinite; }
+  @keyframes voicePulse { 50% { opacity:.25; } }
+  /* In a conversation the top bar button pulses too, so it is clear the mic is taking everything in. */
+  #voiceToggle.talking { background:rgba(110,160,255,.14); }
+  #voiceLog .answer { color:var(--accent); }
   #voiceLog { font-size:12.5px; display:flex; flex-direction:column; gap:4px; overflow:auto; max-height:120px; }
   #voiceLog .line { color:var(--dim); }
   #voiceLog .heard { color:var(--text); }
@@ -282,21 +334,39 @@
 <body>
 <header>
   <strong>Recontech Agentic Tool</strong>
-  <button id="folder" title="Folder every terminal starts in">Choose project folder</button>
+  <!-- The project: where terminals start, its kit, and its files. -->
+  <div class="hgroup project">
+    <button id="folder" title="Folder every terminal starts in">Choose project folder</button>
+    <select id="kit" hidden title="Project kit: standing instructions for this kind of project, given to Claude Code when a terminal starts"></select>
+  </div>
   <button id="filesToggle" title="Show the project folder's files (Ctrl+Alt+F)">Files</button>
   <button id="editorShow" hidden title="Back to the open files (Ctrl+Alt+E)">Editor</button>
-  <select id="kit" hidden title="Project kit: standing instructions for this kind of project, given to Claude Code when a terminal starts"></select>
   <span id="net" hidden title="Claude cannot be reached. Profiles that run on Ollama keep working.">Offline</span>
   <span class="spacer"></span>
-  <button id="roles" title="Make and change terminal roles: the standing job each terminal is given when it starts">Roles</button>
-  <button id="voiceToggle" title="Hey Recon, the local voice assistant. While this is lit it listens for &quot;Hey Recon&quot;, with no click needed: say it, then your request, and the request goes to your Manager terminal. Its answer waits for you to confirm before it goes into a terminal. Click to turn listening off or back on; the choice is remembered.">🎙 Hey Recon</button>
-  <button id="share" title="Share this project's memory with teammates through a file in the project">Team</button>
-  <button id="smaller" class="icon" title="Smaller terminal text">A−</button>
-  <button id="bigger" class="icon" title="Larger terminal text">A+</button>
+  <!-- The right side wraps as one block in a narrow window instead of breaking apart. -->
+  <div class="hright">
+  <!-- How the window looks: one joined group, so it reads as a single control. -->
+  <div class="hgroup view" role="group" aria-label="View">
+    <button id="smaller" title="Smaller terminal text">A−</button>
+    <span id="fontSize" title="Terminal text size"></span>
+    <button id="bigger" title="Larger terminal text">A+</button>
+    <button id="layout">Tabs</button>
+    <button id="toggle">Hide brain</button>
+  </div>
+  <button id="voiceToggle" title="Recon, the local voice assistant. While this is lit, say &quot;Recon&quot; and talk: what you say goes to your Manager terminal and its answers are read out, until you say &quot;that&apos;s all&quot;. Say &quot;turn off the mic&quot; or click here to switch it off; the choice is remembered.">🎙 Recon</button>
+  <span class="divider"></span>
+  <!-- Adding terminals: the main action of the bar. -->
   <button id="free" title="A special terminal that runs Claude Code on free AI providers, for when a Claude limit is hit">Free models</button>
-  <button id="add">+ Profile</button>
-  <button id="layout">Tabs</button>
-  <button id="toggle">Hide brain</button>
+  <button id="add" class="primary">+ Profile</button>
+  <!-- Set up once and rarely changed, so out of the way. -->
+  <div class="menuwrap">
+    <button id="moreMenu" class="icon more" title="Roles and team memory" aria-haspopup="true" aria-expanded="false">⋯</button>
+    <div id="moreItems" class="menu" hidden>
+      <button id="roles" title="Make and change terminal roles: the standing job each terminal is given when it starts">Roles…</button>
+      <button id="share" title="Share this project's memory with teammates through a file in the project">Team memory…</button>
+    </div>
+  </div>
+  </div>
 </header>
 <div id="update" class="bar-note" hidden>
   <span id="updateText"></span>
@@ -364,6 +434,10 @@
     <details id="usage" open>
       <summary title="Claude tokens used by every Claude profile in this app, counted from Claude Code's own session files on this computer"><span>Tokens used</span><span id="usageState" class="dim"></span></summary>
       <div id="usageTiles"></div>
+      <table id="usageAccounts" hidden title="Session and Week: share of each account's plan limit used, from Anthropic (the same as the Claude app). The token columns are counted from Claude Code on this computer.">
+        <thead><tr><th>Account</th><th>Session</th><th>Week</th><th>Tokens: week</th><th>Month</th><th>Year</th><th>Total</th></tr></thead>
+        <tbody></tbody>
+      </table>
       <div id="usageBudget" title="The bar under each Claude terminal fills toward these. Use your plan's figures, or what you want to stay under; leave empty for no bar.">
         <span>Budget</span>
         <label>Session <input id="budgetSession" placeholder="e.g. 2M" spellcheck="false"></label>
@@ -386,20 +460,21 @@
     <div id="detail" class="dim">Your brain grows as you work: every Claude Code session and every note appears here. Point at a circle to read it.</div>
     <section id="voice" hidden>
       <div id="voiceHead">
-        <b>Hey Recon</b>
-        <span id="voiceState" class="dim">Off</span>
+        <b>Recon</b>
+        <button id="voiceState" class="dim" title="Click to start or end a conversation without saying &quot;Recon&quot;">Off</button>
         <span class="spacer"></span>
-        <button id="voiceClose" class="icon" title="Turn off Hey Recon">✕</button>
+        <button id="voiceHush" class="icon" title="Stop reading the answer aloud">🔇</button>
+        <button id="voiceClose" class="icon" title="Turn the mic off (or say &quot;turn off the mic&quot;)">✕</button>
       </div>
       <div id="voiceLog" aria-live="polite"></div>
       <div id="voiceReply" hidden>
         <div id="voiceReplyText"></div>
         <div class="row">
           <button id="voiceInsert">Insert into terminal</button>
-          <button id="voiceDiscard">Discard</button>
+          <button id="voiceDiscard">Hide</button>
         </div>
       </div>
-      <div id="voiceHint" class="dim">Say "Hey Recon", then say what you want. It is sent to whichever terminal has the Manager role; its answer waits here for you to insert or discard, never typed in for you.</div>
+      <div id="voiceHint" class="dim">Say "Recon" and just talk: everything you say goes to the terminal with the Manager role, and its answers are read out as they come. Say "that's all" to end the conversation, or "turn off the mic" to switch Recon off.</div>
     </section>
   </section>
 </main>

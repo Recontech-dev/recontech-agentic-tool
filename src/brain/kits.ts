@@ -46,6 +46,41 @@ export const KITS: Kit[] = [
       "Use signals instead of polling, typed GDScript where the project does, and node paths that match the scene tree. " +
       "For errors, ask for the Debugger or Output message. After a change, say which scene to run to test it.",
   },
+  {
+    id: "unreal",
+    name: "Unreal game",
+    prompt:
+      "This is an Unreal Engine game project. Read the .uproject file for the engine version, modules and plugins, and keep C++ under Source in the module it belongs to. " +
+      "Blueprints, maps and other .uasset and .umap files are binary: never edit them as text; describe the change to make in the Editor instead. " +
+      "Follow Unreal conventions: UCLASS, UPROPERTY and UFUNCTION macros, the A, U, F and E name prefixes, and garbage-collection-safe object references. Keep Tick light and prefer timers and events. " +
+      "Changes to headers or reflected types need a full rebuild, not Live Coding; say when. For errors, ask for the Output Log or build log lines. After a change, say what to do in the Editor to test it.",
+  },
+  {
+    id: "desktop",
+    name: "Desktop app",
+    prompt:
+      "This is a desktop app project (Electron or Tauri). Read package.json, or src-tauri for Tauri, to learn the scripts and how the app is built and packaged, and use them. " +
+      "Keep the main or backend process and the page apart: the page gets only what the preload script or commands expose, never full Node or system access, and every message from the page is checked before it is acted on. " +
+      "Think about Windows, macOS and Linux: paths, line endings, file permissions and installers. Never block the main process with slow work. " +
+      "After a change, say how to start the app to see it, and whether it also needs a new installer build.",
+  },
+  {
+    id: "server",
+    name: "Server or API",
+    prompt:
+      "This is a server or API project. First find the framework, how it is started and tested, and how it is configured (environment variables, config files) from the project files. " +
+      "Check every input from a request, keep secrets in configuration and out of code and logs, use parameterised queries, and return clear errors with the right status codes. " +
+      "Treat database changes as migrations that can be applied to existing data, and keep changes to a public endpoint backward compatible unless told otherwise. " +
+      "After a change, say how to call the endpoint to see it, for example with a curl command.",
+  },
+  {
+    id: "python",
+    name: "Python",
+    prompt:
+      "This is a Python project. Find out the Python version and how dependencies are managed (pyproject.toml, requirements.txt, uv, poetry or a virtual environment) and use that, never the system Python for installs. " +
+      "Follow the style and type hints the project already uses, run its tests (usually pytest) and its linters after a change, and add a dependency only to the file the project manages them in. " +
+      "After a change, say which command to run to see it.",
+  },
 ];
 
 export interface Role {
@@ -97,15 +132,42 @@ function packageJson(folder: string): Record<string, any> | null {
   }
 }
 
+/** The text of the Python dependency files, lower case, to look for a framework in; "" when there are none. */
+function pythonDeps(folder: string): string {
+  return ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"]
+    .map((file) => {
+      try {
+        return fs.readFileSync(path.join(folder, file), "utf8").toLowerCase();
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 /** Guess the kind of project from the files in its folder. */
 export function detectKit(folder: string): string {
   if (!folder || !fs.existsSync(folder)) return "none";
   if (exists(folder, "ProjectSettings", "ProjectVersion.txt") || (exists(folder, "Assets") && exists(folder, "ProjectSettings"))) return "unity";
   if (exists(folder, "project.godot")) return "godot";
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(folder);
+  } catch {
+    // Unreadable: the checks by name below still work.
+  }
+  if (files.some((name) => name.toLowerCase().endsWith(".uproject"))) return "unreal";
   const pkg = packageJson(folder);
   const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) };
   if (exists(folder, "pubspec.yaml") || (exists(folder, "android") && exists(folder, "ios")) || deps["react-native"] || deps["expo"] || deps["@capacitor/core"]) return "mobile";
+  // Before websites: a desktop app usually has React or an index.html of its own too.
+  if (deps["electron"] || deps["@tauri-apps/api"] || deps["@tauri-apps/cli"] || exists(folder, "src-tauri")) return "desktop";
   if (["next", "react", "vue", "svelte", "astro", "vite", "nuxt", "@angular/core", "solid-js"].some((name) => deps[name]) || exists(folder, "index.html")) return "web";
+  if (["express", "fastify", "@nestjs/core", "koa", "hono", "@hapi/hapi"].some((name) => deps[name])) return "server";
+  const python = pythonDeps(folder);
+  if (exists(folder, "manage.py") || /\b(django|fastapi|flask|starlette|aiohttp)\b/.test(python)) return "server";
+  if (python || files.some((name) => name.endsWith(".py"))) return "python";
   return "none";
 }
 

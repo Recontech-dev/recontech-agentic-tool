@@ -13,12 +13,13 @@ import * as files from "../brain/files";
 import { KITS, allRoles, detectKit, isBuiltInRole, kitById, roleById, standingPrompt } from "../brain/kits";
 import { claudeCommand, configDirOf, ollamaModels, online, profileEnv, signedInAs } from "../brain/launch";
 import { exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
-import { afterWakeWord, cleanupTranscript } from "../brain/speech";
+import { afterWakeWord, cleanupTranscript, speakable, voiceCommand } from "../brain/speech";
 import { addNote, removeNote } from "../brain/store";
 import { containerDir, earlierHomes, home } from "../brain/paths";
 import { moveData } from "../brain/relocate";
 import { removeSession, renameProfileSessions, sameFolder } from "../brain/sessions";
 import { bundleReady, renameProfileLabels } from "../brain/sorting";
+import { planLimits } from "../brain/limits";
 import { tokenUsage } from "../brain/usage";
 import * as ws from "../brain/workspace";
 import { Control } from "./control";
@@ -26,6 +27,7 @@ import { Inbox } from "./inbox";
 import { PasteMode, bracketedPaste } from "./paste";
 import { VOICE_REPLY_MS, VoiceReplies } from "./voice";
 import { FreeModels } from "./free";
+import { PRESETS } from "../proxy/server";
 
 const BRAIN_REFRESH_MS = 10_000;
 const NETWORK_CHECK_MS = 30_000;
@@ -117,11 +119,11 @@ const control = new Control({
   deliver: (name, text, from) => {
     const profile = workspace.profiles.find((p) => p.name === name);
     if (!profile || !terminals.has(profile.id)) return "sent";
-    // The Manager's answer to a Hey Recon voice request waits for the user to confirm, instead of going
-    // straight into the terminal; messages from any other terminal are delivered as usual.
+    // In a voice conversation the Manager's messages are spoken (and shown, to insert if wanted)
+    // instead of going straight into the terminal; messages from any other terminal are delivered as usual.
     const reply = voiceReplies.take(profile.id, from, text);
     if (reply !== null) {
-      send("voice:reply", profile.id, reply);
+      send("voice:reply", profile.id, reply, speakable(reply));
       return "sent";
     }
     return sendToProfile(profile, text);
@@ -131,7 +133,7 @@ const control = new Control({
 /** Messages from other terminals that wait while the user is typing in the terminal they are for. */
 const inbox = new Inbox();
 const INBOX_CHECK_MS = 500;
-/** Terminals waiting for the Manager's answer to a Hey Recon request, held for the user to confirm instead of typed in. */
+/** Terminals the user talks to the Manager through by voice; the Manager's messages to them are spoken, not typed in. */
 const voiceReplies = new VoiceReplies();
 
 /** Whether each terminal's program has bracketed paste on, which Claude Code has and a plain shell has not. */
@@ -588,11 +590,25 @@ ipcMain.handle("brain:search", (_event, query: string) => brain.searchSmart(Stri
 ipcMain.handle("brain:unfinished", () => brain.unfinished(workspace.folder));
 // Claude tokens only: Ollama and Free models terminals also write usage, but those are not Claude's.
 // The renderer also gets each Claude profile's own week and session window, by profile id, for the bar under its terminal.
+// Each Claude account (a Claude Code folder, which several terminals can share) also gets its own
+// periods and its plan limits from Anthropic: the percentages the Claude app shows.
 ipcMain.handle("usage:get", async () => {
   const claude = workspace.profiles.filter((p) => (p.kind ?? "claude") === "claude");
   try {
-    const { folders, ...usage } = await tokenUsage(claude.map(configDirOf));
-    return { ...usage, profiles: Object.fromEntries(claude.map((p) => [p.id, folders[path.resolve(configDirOf(p))]]).filter(([, u]) => u)) };
+    const dirs = [...new Set(claude.map((p) => path.resolve(configDirOf(p))))];
+    const [{ folders, ...usage }, limits] = await Promise.all([tokenUsage(dirs), Promise.all(dirs.map((dir) => planLimits(dir)))]);
+    const accounts = dirs.map((dir, i) => {
+      const owners = claude.filter((p) => path.resolve(configDirOf(p)) === dir);
+      return { dir, names: owners.map((p) => p.name), email: signedInAs(owners[0]), usage: folders[dir] ?? null, limits: limits[i] };
+    });
+    return {
+      ...usage,
+      accounts,
+      profiles: Object.fromEntries(claude.map((p) => {
+        const dir = path.resolve(configDirOf(p));
+        return [p.id, folders[dir] ? { ...folders[dir], limits: limits[dirs.indexOf(dir)] } : null];
+      }).filter(([, u]) => u)),
+    };
   } catch (error) {
     return { error: String((error as Error)?.message ?? error) };
   }
@@ -772,29 +788,46 @@ ipcMain.handle("free:save", (_event, entries: { id: string; key?: string; model?
 ipcMain.handle("free:test", (_event, entries?: { id: string; key?: string; model?: string; baseUrl?: string }[]) =>
   Array.isArray(entries) ? free.testEntries(entries) : free.test(),
 );
+// "Get a key" in the Free models dialog opens that provider's own key page in the browser; only those known pages.
+ipcMain.handle("free:key-page", (_event, id: string) => {
+  const url = Object.hasOwn(PRESETS, String(id)) ? PRESETS[String(id)].keyUrl : "";
+  if (url) void shell.openExternal(url);
+});
 ipcMain.handle("sorting:get", () => sortingStatus);
 ipcMain.handle("sorting:toggle", () => toggleSorting());
 ipcMain.handle("mic:transcribe", (_event, pcm: number[]) => transcribe(Array.isArray(pcm) ? pcm.map(Number) : []));
 
-/** Whether a transcript starts with "Hey Recon", and what was said after it, if anything. */
+/**
+ * Reads one thing the user said: whether it starts with the wake word "Recon" (and what followed it),
+ * and whether it is a command to the voice assistant itself ("turn off the mic", "that's all").
+ */
 ipcMain.handle("voice:wake", (_event, text: string) => {
-  const after = afterWakeWord(String(text ?? ""));
-  return { matched: after !== null, after: after ?? "" };
+  const heard = String(text ?? "");
+  const after = afterWakeWord(heard);
+  return { matched: after !== null, after: after ?? "", command: voiceCommand(after ?? heard) };
 });
 
-/** Hands a Hey Recon request to whichever terminal has the Manager role; its reply waits for the user to confirm. */
+/**
+ * Hands what the user said to whichever terminal has the Manager role, as part of a live conversation:
+ * its answers come back to another running terminal (the anchor) and are spoken there, not typed in.
+ */
 ipcMain.handle("voice:ask", (_event, anchorId: string, command: string) => {
-  const anchor = workspace.profiles.find((p) => p.id === String(anchorId));
   const manager = workspace.profiles.find((p) => p.role === "manager");
-  if (!anchor) return { error: "That terminal is gone." };
   if (!manager) return { error: "No terminal has the Manager role yet. Open Roles and give one terminal the Manager role." };
-  if (manager.id === anchor.id) return { error: `${manager.name} already has the Manager role; just type to it.` };
   if (!terminals.has(manager.id)) return { error: `${manager.name}'s terminal has not been started.` };
+  // The Manager answers with message_terminal, which needs another terminal to send to. The active one
+  // is used, or any other running one when the Manager itself is active.
+  const others = workspace.profiles.filter((p) => p.id !== manager.id && terminals.has(p.id));
+  const anchor = others.find((p) => p.id === String(anchorId)) ?? others[0];
+  if (!anchor) return { error: `Start one more terminal besides ${manager.name}; the Manager answers by voice through it.` };
   const text = cleanupTranscript(String(command ?? ""));
-  if (!text) return { error: "Didn't catch a request." };
+  if (!text) return { error: "Didn't catch that." };
   voiceReplies.expect(anchor.id, manager.name);
-  const how = sendToProfile(manager, `[Message from the "${anchor.name}" terminal, heard by voice] ${text} When you have an answer, send it back with message_terminal to "${anchor.name}".`);
-  return { manager: manager.name, queued: how === "queued", waitMs: VOICE_REPLY_MS };
+  const how = sendToProfile(manager,
+    `[Message from the "${anchor.name}" terminal, spoken by the user in a live voice conversation] ${text} ` +
+    `Answer with message_terminal to "${anchor.name}"; your answer is read aloud, so write it as speech: one to three short sentences, no Markdown, lists or code. ` +
+    "If the work takes a while, say so first, then send another short message when it is done.");
+  return { manager: manager.name, anchor: anchor.id, queued: how === "queued", waitMs: VOICE_REPLY_MS };
 });
 ipcMain.handle("session:resume", (_event, ref: { profile: string; id: string; folder: string }) => {
   const profile = workspace.profiles.find((p) => p.name === ref?.profile);

@@ -11,7 +11,7 @@ import { claudeCommand } from "../brain/launch";
 import * as meaning from "../brain/meaning";
 import { SHARE_FILE, exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
 import * as sorting from "../brain/sorting";
-import { afterWakeWord, cleanupTranscript, matchesWakeWord } from "../brain/speech";
+import { afterWakeWord, cleanupTranscript, matchesWakeWord, speakable, voiceCommand } from "../brain/speech";
 import { addNote, notes } from "../brain/store";
 import { newer } from "../brain/version";
 import * as ws from "../brain/workspace";
@@ -72,6 +72,15 @@ test("the project kit is detected from the files, and kit and role become one li
   assert.equal(detectKit(make("w", { "package.json": '{"dependencies":{"next":"15"}}' })), "web");
   assert.equal(detectKit(make("m", { "package.json": '{"dependencies":{"expo":"52","react":"19"}}' })), "mobile");
   assert.equal(detectKit(make("f", { "pubspec.yaml": "" })), "mobile");
+  assert.equal(detectKit(make("ue", { "Shooter.uproject": "{}" })), "unreal");
+  // A desktop app with React in it is a desktop app, not a website.
+  assert.equal(detectKit(make("d", { "package.json": '{"dependencies":{"react":"19"},"devDependencies":{"electron":"44"}}' })), "desktop");
+  assert.equal(detectKit(make("t", { "src-tauri/tauri.conf.json": "{}" })), "desktop");
+  assert.equal(detectKit(make("s", { "package.json": '{"dependencies":{"express":"5"}}' })), "server");
+  assert.equal(detectKit(make("dj", { "manage.py": "", "requirements.txt": "Django==5.1" })), "server");
+  assert.equal(detectKit(make("fa", { "pyproject.toml": 'dependencies = ["fastapi>=0.110"]' })), "server");
+  assert.equal(detectKit(make("py", { "pyproject.toml": 'dependencies = ["numpy"]' })), "python");
+  assert.equal(detectKit(make("py2", { "main.py": "print(1)" })), "python");
   assert.equal(detectKit(make("n", { "notes.txt": "" })), "none");
   assert.equal(detectKit(path.join(root, "missing")), "none");
 
@@ -210,16 +219,18 @@ test("control characters in a role prompt never reach the typed command line as 
 });
 
 test("the wake word is heard loosely at the start, never in ordinary talk, and the command after it is kept", () => {
-  // As Whisper tiny.en writes "Hey Recon", raw or after cleanupTranscript.
+  // As Whisper tiny.en writes "Recon" or "Hey Recon", raw or after cleanupTranscript.
   for (const heard of ["hey recon", "Hey Recon.", "Hey, Recon!", "hey reckon", "Hey re-con.", "hey re con", "hey rekon",
-    "Hey raccoon.", "hey racoon", "hey con", "Hey Kon.", "HAY RECON", "heh recon", "  um, hey recon", "Uh hey, con.", '"Hey Recon."']) {
+    "Hey raccoon.", "hey racoon", "hey con", "Hey Kon.", "HAY RECON", "heh recon", "  um, hey recon", "Uh hey, con.", '"Hey Recon."',
+    "recon", "Recon.", "Reckon?", "re-con", "Raccoon.", "okay recon", "OK, Recon.", "um recon"]) {
     assert.ok(matchesWakeWord(heard), heard);
   }
   for (const heard of ["", "   ", "hey", "hey can you check the build", "Hey, contact the team.", "hey cone", "hey bacon",
-    "hey reconnect the database", "hey recons", "they recon", "okay recon", "recon", "so hey recon", "I said hey recon",
-    "hey you, recon", "heyrecon", "Hey Ron."]) {
+    "hey reconnect the database", "hey recons", "they recon", "so hey recon", "I said hey recon", "I reckon so",
+    "hey you, recon", "heyrecon", "Hey Ron.", "con", "reconnect", "reconsider it", "okay con"]) {
     assert.ok(!matchesWakeWord(heard), heard);
   }
+  assert.equal(afterWakeWord("Recon, what's the build status?"), "what's the build status?");
   assert.equal(afterWakeWord("hey recon what's the build status"), "what's the build status");
   assert.equal(afterWakeWord("Hey, Recon. Run the tests."), "Run the tests.");
   assert.equal(afterWakeWord("hey con, tell the builder to add a logout button"), "tell the builder to add a logout button");
@@ -227,6 +238,26 @@ test("the wake word is heard loosely at the start, never in ordinary talk, and t
   assert.equal(afterWakeWord("hey recon"), "");
   assert.equal(afterWakeWord("hey can you"), null);
   assert.equal(cleanupTranscript(afterWakeWord("hey reckon um run the the tests")!), "Run the tests.");
+});
+
+test("short spoken commands turn the mic off or end the conversation; longer requests go to the Manager", () => {
+  for (const said of ["Turn off the mic.", "turn the mic off", "Mic off!", "switch off the microphone", "Stop listening.",
+    "mute the mic", "Okay, turn the voice feature off.", "shut off voice"]) {
+    assert.equal(voiceCommand(said), "off", said);
+  }
+  for (const said of ["That's all.", "thats it", "Go to sleep.", "Goodbye.", "bye bye", "Never mind.", "Stop.", "Thanks, that's all.", "okay that's all"]) {
+    assert.equal(voiceCommand(said), "sleep", said);
+  }
+  for (const said of ["", "Run the tests.", "Tell the builder to add a button that will turn off the mic for users.",
+    "What's the status of the build?", "Is that all done?", "Stop the build and run the tests again from the start please"]) {
+    assert.equal(voiceCommand(said), null, said);
+  }
+});
+
+test("a Manager's answer is read aloud without Markdown, code or links", () => {
+  assert.equal(speakable("**Done.** Tests pass in `npm test`."), "Done. Tests pass in npm test.");
+  assert.equal(speakable("## Status\n- build green\n- 2 fixes\nSee https://github.com/x/y/pull/3"), "Status build green 2 fixes See a link");
+  assert.equal(speakable("Run this:\n```\nnpm ci\n```\nthen restart."), "Run this: (code shown on screen) then restart.");
 });
 
 /** A stand-in for Ollama's embedding endpoint: texts about the same subject get the same direction. */

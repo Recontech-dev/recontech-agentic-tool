@@ -22,14 +22,18 @@ export function cleanupTranscript(raw: string): string {
 }
 
 /**
- * "Hey Recon", as Whisper tiny.en tends to hear it: "hey recon", "hey reckon", "hey re-con",
- * "hey raccoon", or just "hey con". Only at the very start (after a filler or two), and only with an
- * "o" sound, so ordinary talk such as "hey, can you…" or "hey, contact…" never wakes the assistant.
+ * "Recon", as Whisper tiny.en tends to hear it: "recon", "reckon", "re-con", "rekon" or "raccoon",
+ * optionally after "hey" or "okay", and after "hey" also just "con". Only at the very start (after a
+ * filler or two), so "I reckon…" or "hey, can you…" never wakes the assistant.
  */
-const WAKE_WORD = /^[\s"'.,!?-]*(?:(?:um+|uh+|erm+)\b[\s,.]*)*(?:hey|hay|heh)\b[\s,.!-]*(?:re[\s-]?(?:c|k|ck|kk)on|rac+o+n|con|kon)\b[\s"'.,!?:;-]*/i;
+const RECON = String.raw`(?:re[\s-]?(?:c|k|ck|kk)on|rac+o+n)`;
+const WAKE_WORD = new RegExp(
+  String.raw`^[\s"'.,!?-]*(?:(?:um+|uh+|erm+)\b[\s,.]*)*(?:(?:hey|hay|heh)\b[\s,.!-]*(?:${RECON}|con|kon)|(?:(?:ok|okay)\b[\s,.!-]*)?${RECON})\b[\s"'.,!?:;-]*`,
+  "i",
+);
 
 /**
- * What was said after "Hey Recon": null when the transcript does not start with the wake word, ""
+ * What was said after "Recon": null when the transcript does not start with the wake word, ""
  * when it was only the wake word (the user is waiting to be asked), otherwise the command that ran on
  * in the same breath, as Whisper wrote it (pass it through cleanupTranscript before using it).
  */
@@ -38,5 +42,39 @@ export function afterWakeWord(transcript: string): string | null {
   return match ? transcript.slice(match[0].length).trim() : null;
 }
 
-/** True when a transcript starts with someone saying "Hey Recon" to start the assistant. */
+/** True when a transcript starts with someone saying "Recon" to start the assistant. */
 export const matchesWakeWord = (transcript: string): boolean => afterWakeWord(transcript) !== null;
+
+/** Turning the voice feature off by voice: "turn off the mic", "mic off", "stop listening", "mute the microphone". */
+const MIC_OFF = /\b(?:(?:turn|switch|shut)\s+(?:the\s+|your\s+)?(?:mic|microphone|voice)(?:\s+feature)?\s+off|(?:turn|switch|shut)\s+off\s+(?:the\s+|your\s+)?(?:mic|microphone|voice)|mic(?:rophone)?\s+off|stop\s+listening|mute\s+(?:the\s+)?(?:mic|microphone))\b/i;
+/** Ending a conversation without turning the mic off: it then waits for "Recon" again. */
+const SLEEP = /^(?:ok(?:ay)?[\s,]+)?(?:that'?s\s+(?:all|it)|that\s+is\s+all|go\s+to\s+sleep|good\s*bye|bye(?:\s+bye)?|never\s*mind|stop(?:\s+talking)?|thanks?(?:\s+you)?,?\s+that'?s\s+(?:all|it))\b/i;
+/** Commands are short; a longer sentence that mentions the mic ("tell the builder to turn off the mic button") is a request. */
+const MAX_COMMAND_WORDS = 8;
+
+/**
+ * A spoken instruction to the voice assistant itself, handled on this computer rather than sent to
+ * the Manager: "off" turns the voice feature off, "sleep" ends the conversation. null for anything else.
+ */
+export function voiceCommand(transcript: string): "off" | "sleep" | null {
+  const text = String(transcript ?? "").replace(/[^\w\s',-]/g, " ").replace(/\s+/g, " ").trim();
+  if (!text || text.split(" ").length > MAX_COMMAND_WORDS) return null;
+  if (MIC_OFF.test(text)) return "off";
+  if (SLEEP.test(text)) return "sleep";
+  return null;
+}
+
+/**
+ * A Manager's message made fit to be read aloud: no Markdown marks, code blocks or long links, which
+ * speech synthesis would spell out symbol by symbol.
+ */
+export function speakable(text: string): string {
+  return String(text ?? "")
+    .replace(/```[\s\S]*?```/g, " (code shown on screen) ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/https?:\/\/\S+/g, "a link")
+    .replace(/^\s*(?:#+|[-*•]|\d+[.)])\s+/gm, "")
+    .replace(/[*_~#>|]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}

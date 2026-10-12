@@ -38,7 +38,7 @@ test("a crafted reply cannot break out of the paste or press Enter", () => {
   assert.equal(bracketedPaste("Grüße, 日本語 ✓ ’quotes’"), "\x1b[200~Grüße, 日本語 ✓ ’quotes’\x1b[201~", "ordinary text, accents and emoji pass through");
 });
 
-test("only the Manager's answer is held for the user, and a newer request is never cut short", () => {
+test("only the Manager's messages are taken into the conversation, all of them while it lasts", () => {
   const replies = new VoiceReplies();
   const t = 1_000_000;
   assert.equal(replies.take("work", "Lead", "[Message from the \"Lead\" terminal] hi", t), null, "nothing is awaited yet");
@@ -47,9 +47,12 @@ test("only the Manager's answer is held for the user, and a newer request is nev
   // Another terminal's message arrives first: it is delivered as usual and the wait goes on.
   assert.equal(replies.take("work", "Checker", "[Message from the \"Checker\" terminal] review done", t + 1000), null);
   assert.equal(replies.take("work", undefined, "no sender", t + 1000), null);
-  // The Manager's answer is held, without the prefix, and only once.
-  assert.equal(replies.take("work", "lead", "[Message from the \"Lead\" terminal] The build is green.", t + 2000), "The build is green.");
-  assert.equal(replies.take("work", "Lead", "[Message from the \"Lead\" terminal] again", t + 3000), null);
+  // The Manager's answer is taken without the prefix, and so is its next message: a live conversation.
+  assert.equal(replies.take("work", "lead", "[Message from the \"Lead\" terminal] Working on it.", t + 2000), "Working on it.");
+  assert.equal(replies.take("work", "Lead", "[Message from the \"Lead\" terminal] The build is green.", t + 3000), "The build is green.");
+  // Each answer keeps the conversation open, so a long task can still report when it is done.
+  assert.equal(replies.take("work", "Lead", "Done at last.", t + 3000 + VOICE_REPLY_MS - 1), "Done at last.");
+  assert.equal(replies.take("work", "Lead", "much later", t + 3000 + 2 * VOICE_REPLY_MS + 1), null);
 
   // A second request made just before the first would have expired keeps its own full wait.
   replies.expect("work", "Lead", t);

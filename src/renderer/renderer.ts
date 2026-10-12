@@ -52,11 +52,14 @@ const soon = (work: () => void) => setTimeout(work, 30);
 
 /* ---------- Speech-to-text ---------- */
 
-/** Decodes a recorded clip to the 16kHz mono samples the local Whisper model expects. */
+/**
+ * Decodes a recorded clip to the 16kHz mono samples the local Whisper model expects. Decoding only
+ * needs a context to run on, not real audio output, so this never opens the hardware the way a plain
+ * `AudioContext` would (and then has to wait for it to close) — that cost was paid on every utterance.
+ */
 async function toPcm16k(blob: Blob): Promise<Float32Array> {
-  const audioCtx = new AudioContext();
-  const decoded = await audioCtx.decodeAudioData(await blob.arrayBuffer());
-  await audioCtx.close();
+  const probe = new OfflineAudioContext(1, 1, 16000);
+  const decoded = await probe.decodeAudioData(await blob.arrayBuffer());
   const offline = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
   const source = offline.createBufferSource();
   source.buffer = decoded;
@@ -65,18 +68,26 @@ async function toPcm16k(blob: Blob): Promise<Float32Array> {
   return (await offline.startRendering()).getChannelData(0);
 }
 
+/**
+ * The 16kHz samples as plain numbers for IPC, rounded to 4 decimals. That is far finer than Whisper
+ * can hear (about -80dB), but it makes the JSON the main process forwards to the worker roughly a third
+ * the size, which is serialized and parsed again on every utterance.
+ */
+const pcmForIpc = (pcm: Float32Array): number[] => Array.from(pcm, (value) => Math.round(value * 1e4) / 1e4);
+
 api.on("mic:status", (status: { status: string; percent?: number; message?: string }) => {
   if (status.status === "downloading") toast(`Downloading the local speech model… ${status.percent ?? 0}%`);
   else if (status.status === "error") toast(`Speech-to-text: ${status.message}`, true);
 });
 
-/* ---------- Hey Recon: an always-listening local voice assistant ---------- */
+/* ---------- Recon: a local voice assistant to talk to ---------- */
 
-// "armed" is listening for the wake word; "awake" is listening for the request that follows it;
-// "sent" is waiting on the Manager terminal; "reply" is showing its answer for the user to confirm.
-type VoicePhase = "idle" | "armed" | "awake" | "sent" | "reply";
+// "armed" listens for the wake word "Recon". "talk" is a live conversation: everything the user says
+// goes to the Manager terminal and each of its messages is read aloud, until the user says "that's all"
+// or stays quiet for a while. "Turn off the mic" turns the whole feature off.
+type VoicePhase = "idle" | "armed" | "talk";
 let voicePhase: VoicePhase = "idle";
-/** The terminal that was active when the wake word was heard; the Manager's answer comes back here. */
+/** The terminal the Manager answers through (it needs one to send to); its messages there are spoken. */
 let voiceAnchorId = "";
 let voiceStream: MediaStream | null = null;
 let voiceCtx: AudioContext | null = null;
@@ -88,61 +99,98 @@ let voiceRecording = false;
 let voiceUtteranceStart = 0;
 let voiceLastLoud = 0;
 let voiceReplyPending: { id: string; text: string } | null = null;
-/** When the current phase gives up: "awake" goes back to listening for the wake word, "sent" stops waiting. */
-let voicePhaseUntil = 0;
-/** No recording starts before this, so the assistant's own voice is not heard as a request. */
+/** Things said to the Manager that it has not answered yet. */
+let voiceWaiting = 0;
+/** When the conversation last had something in it (the user talking or an answer read out). */
+let voiceLastActive = 0;
+/** No recording starts before this, so the assistant's own voice is not heard as the user's. */
 let voiceQuietUntil = 0;
 
 /** Root-mean-square loudness of a frame, 0 (silence) upward; a cheap, fully local stand-in for real VAD. */
 const VOICE_RMS_ON = 0.025;
 const VOICE_RMS_OFF = 0.015;
-/** Silence that ends an utterance. A request gets longer, since people pause while saying what they want. */
-const VOICE_SILENCE_MS = 900;
-const VOICE_REQUEST_SILENCE_MS = 1600;
-const VOICE_MAX_UTTERANCE_MS = 12000;
+/**
+ * Silence that ends an utterance: nothing is transcribed until it has passed, so it is felt on every turn.
+ * In a conversation it is longer, since people pause while saying what they want. A pause right after
+ * "Recon" that runs past the shorter one is not lost: the rest is recorded as the next utterance.
+ */
+const VOICE_SILENCE_MS = 750;
+const VOICE_TALK_SILENCE_MS = 1000;
+const VOICE_MAX_UTTERANCE_MS = 15000;
 const VOICE_MIN_UTTERANCE_MS = 250;
-/** After "Hey Recon" alone, how long it waits for the request before listening for the wake word again. */
-const VOICE_AWAKE_MS = 8000;
+/** A conversation with nothing said or answered for this long ends; "Recon" starts the next one. */
+const VOICE_TALK_IDLE_MS = 45_000;
+/** While the Manager is still working on something, the conversation waits longer before ending. */
+const VOICE_TALK_WAITING_MS = 3 * 60_000;
 /** Checked on a timer, not animation frames: those stop while the window is minimized or covered. */
 const VOICE_WATCH_MS = 50;
-/** How long after the assistant stops speaking the microphone still ignores sound (echo from the speakers). */
-const VOICE_ECHO_MS = 400;
+/**
+ * How long after the assistant stops speaking the microphone still ignores sound: the speakers' output
+ * still draining and the room's echo. Echo cancelling does not cover speech synthesis, so this stays.
+ */
+const VOICE_ECHO_MS = 350;
+/** Whether a recording is being transcribed or sent, shown so a pause after speaking does not look like nothing happened. */
+let voiceBusy = 0;
 
-function voiceLog(text: string): void {
+function voiceLog(text: string, className = "line"): void {
   const log = $("voiceLog");
   const line = document.createElement("div");
-  line.className = "line";
+  line.className = className;
   line.textContent = text;
   log.append(line);
   log.scrollTop = log.scrollHeight;
-  while (log.children.length > 12) log.firstChild?.remove();
+  while (log.children.length > 30) log.firstChild?.remove();
 }
 
-function voiceSetState(phase: VoicePhase, label: string, lastsMs = 0): void {
+function voiceSetState(phase: VoicePhase): void {
   voicePhase = phase;
-  voicePhaseUntil = lastsMs ? Date.now() + lastsMs : 0;
   const state = $("voiceState");
-  state.textContent = label;
-  state.className = phase === "armed" ? "armed" : phase === "awake" || phase === "sent" ? "sent" : "dim";
+  state.textContent = phase === "talk"
+    ? (voiceBusy ? "Talking · got it…" : voiceWaiting ? "Talking · Manager is working…" : "Talking · listening")
+    : phase === "armed" ? 'Say "Recon"' : "Off";
+  state.className = phase === "talk" ? "talk" : phase === "armed" ? "armed" : "dim";
+  $("voiceToggle").classList.toggle("talking", phase === "talk");
 }
 
-function voiceSpeak(text: string): void {
+/** Reads text aloud. Answers queue up behind each other; `now` cuts off whatever is being said first. */
+function voiceSpeak(text: string, now = false): void {
   try {
-    speechSynthesis.cancel();
+    if (now) speechSynthesis.cancel();
     speechSynthesis.speak(new SpeechSynthesisUtterance(text));
   } catch {
     // speech synthesis is unavailable; the panel's text is still there to read
   }
 }
 
-/** Starts listening for "Hey Recon". Returns false when the microphone could not be opened. */
+/** A short tone: rising when a conversation starts, falling when it ends, a tick when something was sent. */
+function voiceTone(kind: "start" | "end" | "sent"): void {
+  const ctx = voiceCtx;
+  if (!ctx) return;
+  const notes = kind === "start" ? [660, 880] : kind === "end" ? [660, 440] : [880];
+  const t = ctx.currentTime;
+  notes.forEach((frequency, i) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.frequency.value = frequency;
+    gain.gain.setValueAtTime(0.0001, t + i * 0.11);
+    gain.gain.exponentialRampToValueAtTime(0.06, t + i * 0.11 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.11 + 0.1);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t + i * 0.11);
+    osc.stop(t + i * 0.11 + 0.11);
+  });
+  // The tone comes out of the speakers too; it is not the user talking.
+  voiceQuietUntil = Math.max(voiceQuietUntil, Date.now() + notes.length * 110 + 150);
+}
+
+/** Starts listening for "Recon". Returns false when the microphone could not be opened. */
 async function voiceStart(): Promise<boolean> {
   if (voicePhase !== "idle") return true;
   let stream: MediaStream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
   } catch {
-    toast("Hey Recon could not open the microphone. Check this computer's microphone privacy settings, then click Hey Recon.", true);
+    toast("Recon could not open the microphone. Check this computer's microphone privacy settings, then click Recon.", true);
     return false;
   }
   voiceStream = stream;
@@ -150,8 +198,9 @@ async function voiceStart(): Promise<boolean> {
   $("voice").hidden = false;
   $("voiceLog").textContent = "";
   $("voiceReply").hidden = true;
-  voiceLog('Listening for "Hey Recon"…');
-  voiceSetState("armed", "Listening");
+  voiceWaiting = 0;
+  voiceLog('Say "Recon" to start talking.');
+  voiceSetState("armed");
   const ctx = new AudioContext();
   voiceCtx = ctx;
   const analyser = ctx.createAnalyser();
@@ -160,13 +209,16 @@ async function voiceStart(): Promise<boolean> {
   voiceAnalyser = analyser;
   api.send("voice:listening", true);
   voiceWatchTimer = window.setInterval(voiceWatch, VOICE_WATCH_MS);
+  // The speech model loads on its first request, which would otherwise make the first "Recon" wait
+  // seconds for it. A tenth of a second of silence starts it now; whatever it hears there is dropped.
+  void api.invoke("mic:transcribe", Array.from({ length: 1600 }, () => 0)).catch(() => {});
   return true;
 }
 
 function voiceStop(): void {
   if (voicePhase === "idle") return;
   clearInterval(voiceWatchTimer);
-  // Also tells the main process to stop holding the Manager's answer: it now goes to the terminal as usual.
+  // Also tells the main process to stop taking the Manager's messages: they now go to the terminal as usual.
   api.send("voice:listening", false);
   if (voiceRecorder && voiceRecorder.state !== "inactive") { voiceRecorder.onstop = null; voiceRecorder.stop(); }
   voiceRecorder = null;
@@ -177,11 +229,31 @@ function voiceStop(): void {
   voiceCtx = null;
   voiceAnalyser = null;
   voiceReplyPending = null;
+  voiceWaiting = 0;
+  voiceBusy = 0;
   $("voiceToggle").classList.remove("on");
   $("voice").hidden = true;
   $("voiceReply").hidden = true;
   try { speechSynthesis.cancel(); } catch { /* unavailable */ }
-  voicePhase = "idle";
+  voiceSetState("idle");
+}
+
+/** Starts a conversation: from now on everything said goes to the Manager, with no wake word. */
+function voiceWake(): void {
+  if (voicePhase !== "talk") {
+    voiceTone("start");
+    voiceLog("Listening. Talk to me; say \"that's all\" when you're done.");
+  }
+  voiceLastActive = Date.now();
+  voiceSetState("talk");
+}
+
+/** Ends the conversation without turning the mic off: "Recon" starts the next one. */
+function voiceSleep(message: string): void {
+  if (voicePhase !== "talk") return;
+  voiceSetState("armed");
+  voiceTone("end");
+  voiceLog(message);
 }
 
 function voiceRms(data: Float32Array): number {
@@ -193,23 +265,26 @@ function voiceRms(data: Float32Array): number {
 function voiceWatch(): void {
   if (voicePhase === "idle" || !voiceAnalyser) return;
   const now = Date.now();
-  // A phase that has run out: no request after a bare "Hey Recon", or no answer from the Manager.
-  if (voicePhaseUntil && now > voicePhaseUntil && !voiceRecording) {
-    voiceLog(voicePhase === "awake" ? "No request heard." : "No answer from the Manager terminal yet; it will appear there instead.");
-    voiceSetState("armed", "Listening");
-  }
-  // The assistant's own voice through the speakers is not a request (speech synthesis bypasses echo cancelling).
+  // The assistant's own voice through the speakers is not the user (speech synthesis bypasses echo cancelling).
   let speaking = false;
   try { speaking = speechSynthesis.speaking; } catch { /* unavailable */ }
-  if (speaking) voiceQuietUntil = now + VOICE_ECHO_MS;
+  if (speaking) {
+    voiceQuietUntil = Math.max(voiceQuietUntil, now + VOICE_ECHO_MS);
+    voiceLastActive = now;
+  }
+  // A conversation nobody has said anything in for a while ends by itself.
+  if (voicePhase === "talk" && !voiceRecording && !speaking && now - voiceLastActive > (voiceWaiting ? VOICE_TALK_WAITING_MS : VOICE_TALK_IDLE_MS)) {
+    voiceSleep('Gone quiet. Say "Recon" to talk again.');
+  }
   const data = new Float32Array(voiceAnalyser.fftSize);
   voiceAnalyser.getFloatTimeDomainData(data);
   const rms = voiceRms(data);
   if (!voiceRecording) {
-    if (rms > VOICE_RMS_ON && now >= voiceQuietUntil && (voicePhase === "armed" || voicePhase === "awake")) voiceBeginUtterance();
+    if (rms > VOICE_RMS_ON && now >= voiceQuietUntil) voiceBeginUtterance();
   } else {
     if (rms > VOICE_RMS_OFF) voiceLastLoud = now;
-    const silence = voicePhase === "awake" ? VOICE_REQUEST_SILENCE_MS : VOICE_SILENCE_MS;
+    if (voicePhase === "talk") voiceLastActive = now;
+    const silence = voicePhase === "talk" ? VOICE_TALK_SILENCE_MS : VOICE_SILENCE_MS;
     if (now - voiceUtteranceStart > VOICE_MAX_UTTERANCE_MS || now - voiceLastLoud > silence) voiceEndUtterance();
   }
 }
@@ -239,59 +314,87 @@ function voiceEndUtterance(): void {
 }
 
 async function voiceHandleUtterance(blob: Blob): Promise<void> {
-  const phase = voicePhase;
-  if (phase !== "armed" && phase !== "awake") return;
+  if (voicePhase === "idle") return;
+  // Only a conversation shows it: while armed, every sound in the room is recorded and checked.
+  const shown = voicePhase === "talk";
+  if (shown) { voiceBusy++; voiceSetState("talk"); }
+  try {
+    await voiceTranscribeAndAct(blob);
+  } finally {
+    if (shown) {
+      voiceBusy = Math.max(0, voiceBusy - 1);
+      if ((voicePhase as VoicePhase) !== "idle") voiceSetState(voicePhase);
+    }
+  }
+}
+
+async function voiceTranscribeAndAct(blob: Blob): Promise<void> {
   try {
     const pcm = await toPcm16k(blob);
-    const answer = await api.invoke("mic:transcribe", Array.from(pcm));
-    // Transcribing takes a moment: if Hey Recon was turned off or moved on meanwhile, this clip is stale.
-    if (voicePhase !== phase) return;
+    const answer = await api.invoke("mic:transcribe", pcmForIpc(pcm));
+    // Transcribing takes a moment: if the feature was turned off meanwhile, this clip is stale.
+    if ((voicePhase as VoicePhase) === "idle") return;
     const text = String(answer?.text || "");
     if (!text) return;
-    if (phase === "armed") {
-      const wake = await api.invoke("voice:wake", text);
-      if (!wake?.matched || voicePhase !== phase) return;
-      voiceAnchorId = active;
-      voiceLog('Heard "Hey Recon".');
-      if (wake.after) void voiceAskManager(wake.after);
-      else {
-        voiceSetState("awake", "Listening for your request", VOICE_AWAKE_MS);
-        voiceSpeak("Yes?");
-      }
-    } else {
-      void voiceAskManager(text);
+    const heard: { matched: boolean; after: string; command: "off" | "sleep" | null } = await api.invoke("voice:wake", text);
+    // Outside a conversation only what starts with "Recon" counts; other talk in the room is ignored.
+    if (voicePhase === "armed" && !heard.matched) return;
+    if (heard.command === "off") {
+      voiceLog(`You: ${text}`, "heard");
+      await voiceSwitch(false);
+      voiceSpeak("Mic off.", true);
+      toast('Recon is off. Click Recon in the top bar to turn it back on.');
+      return;
     }
+    if (heard.command === "sleep") {
+      if (voicePhase === "talk") {
+        voiceSpeak("Okay.", true);
+        voiceSleep('Okay. Say "Recon" when you need me.');
+      }
+      return;
+    }
+    const wasTalking = voicePhase === "talk";
+    if (!wasTalking) voiceAnchorId = active;
+    voiceWake();
+    const said = heard.matched ? heard.after : text;
+    if (said.trim()) await voiceAskManager(said);
+    // When the user already went on talking after a pause, "Yes?" would talk over them and into their recording.
+    else if (!wasTalking && !voiceRecording) voiceSpeak("Yes?");
   } catch {
     // a missed utterance just waits for the next one
   }
 }
 
 async function voiceAskManager(command: string): Promise<void> {
-  voiceLog(`You: ${command}`);
-  voiceSetState("sent", "Asking the Manager terminal…");
+  voiceLog(`You: ${command}`, "heard");
   const result = await api.invoke("voice:ask", voiceAnchorId, command);
+  if (voicePhase === "idle") return;
   if (result?.error) {
     voiceLog(result.error);
     voiceSpeak(result.error);
-    voiceSetState("armed", "Listening");
     return;
   }
-  // The renderer gives up when the main process stops holding the answer for confirmation.
-  if (voicePhase === "sent") voicePhaseUntil = Date.now() + (Number(result.waitMs) || 5 * 60_000);
-  voiceSpeak(`Asking ${result.manager}.`);
+  voiceAnchorId = result.anchor;
+  voiceWaiting++;
+  voiceLastActive = Date.now();
+  voiceTone("sent");
+  voiceSetState("talk");
 }
 
-api.on("voice:reply", (id: string, text: string) => {
+api.on("voice:reply", (id: string, text: string, spoken?: string) => {
   if (voicePhase === "idle") return;
+  voiceWaiting = Math.max(0, voiceWaiting - 1);
+  // Kept to insert into the terminal if wanted; the conversation does not wait for it.
   voiceReplyPending = { id, text };
   $("voiceReplyText").textContent = text;
   $("voiceReply").hidden = false;
-  voiceSetState("reply", "Manager answered");
-  voiceLog(`Manager: ${text.length > 140 ? `${text.slice(0, 140)}…` : text}`);
-  voiceSpeak(text);
+  voiceLog(`Manager: ${text.length > 240 ? `${text.slice(0, 240)}…` : text}`, "answer");
+  // An answer opens the conversation again, so the user can answer back without saying "Recon".
+  voiceWake();
+  voiceSpeak(spoken || text);
 });
 
-/** The user's own switch: it is remembered, and Hey Recon starts listening with the app while it is on. */
+/** The user's own switch: it is remembered, and Recon starts listening with the app while it is on. */
 async function voiceSwitch(on: boolean): Promise<void> {
   if (on && !(await voiceStart())) return;
   if (!on) voiceStop();
@@ -300,24 +403,32 @@ async function voiceSwitch(on: boolean): Promise<void> {
 }
 $("voiceToggle").onclick = () => void voiceSwitch(voicePhase === "idle");
 $("voiceClose").onclick = () => void voiceSwitch(false);
+// Clicking the state starts or ends a conversation by hand, for when saying "Recon" is not convenient.
+$("voiceState").onclick = () => {
+  if (voicePhase === "armed") {
+    voiceAnchorId = active;
+    voiceWake();
+  } else if (voicePhase === "talk") voiceSleep('Paused. Say "Recon" to talk again.');
+};
+$("voiceHush").onclick = () => {
+  try { speechSynthesis.cancel(); } catch { /* unavailable */ }
+};
 $("voiceInsert").onclick = async () => {
   if (!voiceReplyPending) return;
   const { id, text } = voiceReplyPending;
-  // Pasted on one line, not submitted: the user still presses Enter themselves, same as a push-to-talk
-  // prompt. The main process strips anything in the Manager's text that could end the paste early, and
-  // refuses while Claude Code is not running there; the answer then stays here to insert later.
+  // Pasted on one line, not submitted: the user still presses Enter themselves. The main process strips
+  // anything in the Manager's text that could end the paste early, and refuses while Claude Code is not
+  // running there; the answer then stays here to insert later.
   const pasted = await api.invoke("term:paste", id, text, true);
   if (pasted?.error) return toast(pasted.error, true);
   if (voiceReplyPending?.id !== id || voiceReplyPending.text !== text) return;
   select(id);
   voiceReplyPending = null;
   $("voiceReply").hidden = true;
-  voiceSetState("armed", "Listening");
 };
 $("voiceDiscard").onclick = () => {
   voiceReplyPending = null;
   $("voiceReply").hidden = true;
-  voiceSetState("armed", "Listening");
 };
 
 function makePanel(profile: Profile): void {
@@ -419,6 +530,9 @@ function makePanel(profile: Profile): void {
   // the terminal would close the list the moment it opens.
   panel.addEventListener("mousedown", (event) => select(profile.id, !(event.target as HTMLElement).closest("select, input, button")));
   terms.set(profile.id, { term, fit, panel });
+  // The terminal follows its own box, not only the window: the usage bar under it can appear or change
+  // height after the first fit, and the last row would otherwise end up hidden behind it.
+  new ResizeObserver(() => fitSoon()).observe(body);
   if (profile.kind === "free") {
     // The free terminal waits until the user asks for it, typically after a Claude limit is hit.
     const cover = document.createElement("div");
@@ -456,7 +570,8 @@ function startRename(id: string, nameEl: HTMLSpanElement): void {
     if (answer.error) return toast(answer.error, true);
     workspace = answer;
     render();
-    if (running(id)) toast(`Renamed. ${value} keeps signing messages to other terminals as "${before}" until it restarts.`);
+    const saved = workspace.profiles.find((p) => p.id === id)?.name ?? value;
+    if (running(id)) toast(`Renamed. ${saved} keeps signing messages to other terminals as "${before}" until it restarts.`);
   };
   input.onkeydown = (event) => {
     if (event.key === "Enter") finish(true);
@@ -891,7 +1006,16 @@ async function openFreeDialog(): Promise<void> {
     name.textContent = provider.name;
     const note = document.createElement("span");
     note.className = "dim";
-    note.textContent = `${provider.note} Get a key: ${provider.keyUrl}`;
+    note.textContent = `${provider.note} Get a key: `;
+    const link = document.createElement("a");
+    link.href = provider.keyUrl;
+    link.textContent = provider.keyUrl;
+    link.title = "Open this page in your browser";
+    link.onclick = (event) => {
+      event.preventDefault();
+      api.invoke("free:key-page", provider.id);
+    };
+    note.append(link);
     head.append(name, note);
     const key = document.createElement("input");
     key.type = "password";
@@ -1041,10 +1165,13 @@ $("folder").onclick = async () => {
   const free = workspace.profiles.find((p) => p.kind === "free");
   const freeWasRunning = !!free && started.has(free.id);
   workspace = await api.invoke("workspace:set-folder", folder);
+  keepOpenList = true;
   closeAllFiles();
+  keepOpenList = false;
   started.clear();
   await showKit();
   render();
+  void restoreOpenFiles();
   if (freeWasRunning) start(free!.id);
   offerSharedNotes();
 };
@@ -1125,6 +1252,7 @@ const DEFAULT_FONT_SIZE = 13;
 /** The A− and A+ buttons say what the text size is now. */
 function showFontSize(): void {
   const size = workspace.fontSize ?? DEFAULT_FONT_SIZE;
+  $("fontSize").textContent = String(size);
   $("smaller").title = `Smaller terminal text (now ${size}px). Ctrl+Alt+0 goes back to ${DEFAULT_FONT_SIZE}px.`;
   $("bigger").title = `Larger terminal text (now ${size}px). Ctrl+Alt+0 goes back to ${DEFAULT_FONT_SIZE}px.`;
 }
@@ -1286,6 +1414,26 @@ function roleChangedNotice(id: string): void {
   if (running.length) toast(`${running.join(", ")} ${running.length === 1 ? "gets" : "get"} the changed role when restarted (↻).`);
 }
 
+/* ---------- Top bar menu ---------- */
+// Roles and Team memory are set up once and rarely changed, so they sit behind ⋯ instead of in the bar.
+
+function showMoreMenu(open: boolean): void {
+  $("moreItems").hidden = !open;
+  $("moreMenu").setAttribute("aria-expanded", String(open));
+}
+$("moreMenu").onclick = () => showMoreMenu($("moreItems").hidden);
+// Picking an item, clicking elsewhere or pressing Esc closes it.
+$("moreItems").addEventListener("click", () => showMoreMenu(false));
+window.addEventListener("mousedown", (event) => {
+  if (!$("moreItems").hidden && !(event.target as HTMLElement).closest(".menuwrap")) showMoreMenu(false);
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("moreItems").hidden) {
+    showMoreMenu(false);
+    event.preventDefault();
+  }
+});
+
 $("roles").onclick = () => openRoles();
 $("roleClose").onclick = () => ($("roleDialog").hidden = true);
 $("roleNew").onclick = () => showRole("");
@@ -1342,8 +1490,12 @@ $("kit").addEventListener("change", async () => {
 // process from Claude Code's own transcripts. The first count can take a few seconds; later ones are quick.
 
 interface Tokens { input: number; output: number; cacheWrite: number; cacheRead: number; total: number }
-interface FolderUsage { week: Tokens; session: { start: number; end: number; tokens: Tokens } | null; last: number }
-interface UsageSummary { week: Tokens; month: Tokens; year: Tokens; all: Tokens; since: number; profiles: Record<string, FolderUsage> }
+interface Limit { percent: number; resets: number }
+type PlanLimits = { session: Limit | null; week: Limit | null; plan: string; at: number } | { error: string };
+interface FolderUsage { week: Tokens; month: Tokens; year: Tokens; all: Tokens; since: number;
+  session: { start: number; end: number; tokens: Tokens } | null; last: number; limits?: PlanLimits }
+interface Account { dir: string; names: string[]; email: string; usage: FolderUsage | null; limits: PlanLimits }
+interface UsageSummary { week: Tokens; month: Tokens; year: Tokens; all: Tokens; since: number; accounts: Account[]; profiles: Record<string, FolderUsage> }
 
 const USAGE_REFRESH_MS = 60_000;
 const USAGE_OPEN_KEY = "usageOpen";
@@ -1376,7 +1528,7 @@ async function showUsage(): Promise<void> {
     if ($("brain").hidden || !($("usage") as HTMLDetailsElement).open) return;
     const tiles = $("usageTiles");
     tiles.textContent = "";
-    const periods: [keyof Omit<UsageSummary, "since" | "profiles">, string][] = [["week", "This week"], ["month", "This month"], ["year", "This year"], ["all", "Total"]];
+    const periods: [keyof Omit<UsageSummary, "since" | "profiles" | "accounts">, string][] = [["week", "This week"], ["month", "This month"], ["year", "This year"], ["all", "Total"]];
     for (const [key, name] of periods) {
       const t = usage[key];
       const tile = document.createElement("div");
@@ -1398,12 +1550,67 @@ async function showUsage(): Promise<void> {
       tile.append(label, value, split);
       tiles.append(tile);
     }
+    showAccounts(usage.accounts ?? []);
     state.textContent = usage.since ? `since ${new Date(usage.since).toLocaleDateString()}` : "nothing yet";
     state.title = "";
   } finally {
     usageBusy = false;
   }
 }
+/** "48%" with when it starts over, for a limit Anthropic reported. */
+function limitText(limit: Limit | null): string {
+  if (!limit) return "–";
+  return `${Math.round(limit.percent)}%`;
+}
+function resetText(limit: Limit | null): string {
+  if (!limit?.resets) return "";
+  const at = new Date(limit.resets);
+  const sameDay = at.toDateString() === new Date().toDateString();
+  return at.toLocaleString([], sameDay ? { hour: "numeric", minute: "2-digit" } : { weekday: "short", hour: "numeric", minute: "2-digit" });
+}
+
+/**
+ * One row per Claude account: its session and weekly limit as Anthropic reports them (what the Claude
+ * app shows, counting everything the account did anywhere), then its tokens per period counted from
+ * this computer's Claude Code transcripts.
+ */
+function showAccounts(accounts: Account[]): void {
+  const table = $("usageAccounts") as HTMLTableElement;
+  table.hidden = !accounts.length;
+  const body = table.tBodies[0];
+  body.textContent = "";
+  for (const account of accounts) {
+    const row = body.insertRow();
+    const name = row.insertCell();
+    name.className = "who";
+    name.textContent = account.names.join(", ");
+    name.title = `${account.email || "Not signed in"}\n${account.dir}`;
+    const limits = account.limits;
+    for (const key of ["session", "week"] as const) {
+      const cell = row.insertCell();
+      cell.className = "limit";
+      if ("error" in limits) {
+        // An idle account's sign-in runs out after a few hours; Claude Code renews it when used there.
+        cell.textContent = key === "session" && /expired|not accepted/.test(limits.error) ? "expired" : "–";
+        cell.title = limits.error;
+        continue;
+      }
+      const limit = limits[key];
+      if (limit) cell.append(meter(limit.percent, 100));
+      cell.append(limitText(limit));
+      cell.title = limit
+        ? `${Math.round(limit.percent)}% of this account's ${key === "session" ? "5-hour session" : "weekly"} limit used, as Anthropic reports it${resetText(limit) ? `. Starts over ${resetText(limit)}` : ""}.`
+        : `Anthropic reported no ${key === "session" ? "session" : "weekly"} limit for this account.`;
+    }
+    for (const key of ["week", "month", "year", "all"] as const) {
+      const cell = row.insertCell();
+      const t = account.usage?.[key];
+      cell.textContent = t ? shortCount(t.total) : "–";
+      if (t) cell.title = `${t.total.toLocaleString()} tokens (${t.output.toLocaleString()} output), counted from Claude Code on this computer`;
+    }
+  }
+}
+
 /*
  * Each Claude terminal's own bar: its tokens this week and in the 5-hour session window in progress,
  * and the usage-limit state Claude Code last printed in it (reached, or a warning that it is close).
@@ -1493,37 +1700,51 @@ function showUsageBars(): void {
       return span;
     };
     const budget = workspace?.usageBudget ?? {};
+    // Anthropic's own percentages, when it could be asked, are what the Claude app shows; budgets are the fallback.
+    const plan = usage?.limits && !("error" in usage.limits) ? usage.limits : null;
     const weekText = `Week ${usage ? shortCount(usage.week.total) : "–"}`;
-    const week = part("week", budget.week ? `${weekText} of ${shortCount(budget.week)}` : weekText, weekText);
-    if (budget.week) week.prepend(meter(usage?.week.total ?? 0, budget.week));
-    const session = usage?.session
+    const week = plan?.week
+      ? part("week", `Week ${limitText(plan.week)} · ${shortCount(usage!.week.total)}`, `Week ${limitText(plan.week)}`)
+      : part("week", budget.week ? `${weekText} of ${shortCount(budget.week)}` : weekText, weekText);
+    if (plan?.week) week.prepend(meter(plan.week.percent, 100));
+    else if (budget.week) week.prepend(meter(usage?.week.total ?? 0, budget.week));
+    const session = plan?.session
+      ? part("session", `Session ${limitText(plan.session)}${usage?.session ? ` · ${shortCount(usage.session.tokens.total)}` : ""}`, `Session ${limitText(plan.session)}`)
+      : usage?.session
       ? part("session", `Session ${shortCount(usage.session.tokens.total)}${budget.session ? ` of ${shortCount(budget.session)}` : ""}`, `Session ${shortCount(usage.session.tokens.total)}`)
       : part("session", "No session in progress", "No session");
     // Every Claude terminal shows a session bar: toward the session budget when one is set, otherwise
     // through the 5-hour window by time, so the bar is there before any budget is written.
-    const sessionMeter = budget.session
+    const sessionMeter = plan?.session
+      ? meter(plan.session.percent, 100)
+      : budget.session
       ? meter(usage?.session?.tokens.total ?? 0, budget.session)
       : meter(usage?.session ? Math.max(0, now - usage.session.start) : 0, usage?.session ? usage.session.end - usage.session.start : 1);
-    sessionMeter.title = budget.session ? "Session tokens toward your session budget" : "Time used of the 5-hour session window. Click to set a session budget in tokens instead.";
+    sessionMeter.title = plan?.session ? "Share of this account's session limit used, as Anthropic reports it" : budget.session ? "Session tokens toward your session budget" : "Time used of the 5-hour session window. Click to set a session budget in tokens instead.";
     sessionMeter.onclick = () => {
       if ($("brain").hidden) $("toggle").click();
       ($("usage") as HTMLDetailsElement).open = true;
       ($("budgetSession") as HTMLInputElement).focus();
     };
     session.prepend(sessionMeter);
-    if (usage?.session) {
-      const until = document.createElement("span");
-      until.className = "until";
-      until.textContent = ` · until ~${time(usage.session.end)}`;
-      session.append(until);
-    }
+    // The reset time sits beside the session part rather than inside it, so a narrow terminal
+    // shortens the session wording instead of cutting the time off.
+    const until = plan?.session?.resets
+      ? part("until", `· resets ${resetText(plan.session)}`, `· ${resetText(plan.session)}`)
+      : usage?.session
+      ? part("until", `· until ~${time(usage.session.end)}`, `· ~${time(usage.session.end)}`)
+      : null;
     const status = limit
       ? part(`limit ${limit.level}`,
         `${limit.level === "reached" ? (limit.weekly ? "Weekly limit reached" : "Limit reached") : "Near limit"}${limit.resets ? ` · resets ${limit.resets}` : ""}`,
         `${limit.level === "reached" ? "Limit" : "Near"}${limit.resets ? ` · ${limit.resets}` : ""}`)
       : part("limit ok", "Within limit", "OK");
-    bar.replaceChildren(week, session, status);
-    bar.title = (usage
+    bar.replaceChildren(...[week, session, until, status].filter((el): el is HTMLSpanElement => !!el));
+    bar.title = (plan
+      ? `Anthropic: ${limitText(plan.session)} of the session limit${resetText(plan.session) ? ` (starts over ${resetText(plan.session)})` : ""}, ` +
+        `${limitText(plan.week)} of the weekly limit${resetText(plan.week) ? ` (starts over ${resetText(plan.week)})` : ""}. This is what the Claude app shows.\n`
+      : usage?.limits && "error" in usage.limits ? `Limits from Anthropic: ${usage.limits.error}.\n` : "") +
+      "On this computer: " + (usage
       ? `This week: ${usage.week.total.toLocaleString()} tokens (${usage.week.output.toLocaleString()} output).\n` +
         (usage.session
           ? `Session window ${time(usage.session.start)} to ${time(usage.session.end)}: ${usage.session.tokens.total.toLocaleString()} tokens (${usage.session.tokens.output.toLocaleString()} output).\n`
@@ -1532,8 +1753,8 @@ function showUsageBars(): void {
       (budget.session || budget.week
         ? `Budget: ${budget.session ? `${budget.session.toLocaleString()} a session` : "no session budget"}, ${budget.week ? `${budget.week.toLocaleString()} a week` : "no weekly budget"} (set under Tokens used in the brain panel).\n`
         : "Set a session and weekly budget under Tokens used in the brain panel to see bars here.\n") +
-      "Session windows are estimated from message times. Claude's own limits are not on this computer, " +
-      "so the limit state shows what Claude Code last printed in this terminal.";
+      "Token counts cover Claude Code on this computer only; the percentages from Anthropic count everything " +
+      "the account did. The limit state shows what Claude Code last printed in this terminal.";
   }
 }
 
@@ -1778,6 +1999,8 @@ $("search").addEventListener("input", () => {
       }
       results.append(item);
     }
+    // New results start at the top, where the best matches are, not where the last list was scrolled to.
+    results.scrollTop = 0;
   }, 200);
 });
 
@@ -2326,13 +2549,16 @@ async function ensureEditor(): Promise<void> {
   diffEditor.getModifiedEditor().onDidChangeModelContent(showEditorState);
 }
 
-/** Open a project file in the editor. False when it is not text (or too large) and should open elsewhere. */
-async function openInEditor(relative: string): Promise<boolean> {
+/**
+ * Open a project file in the editor. False when it is not text (or too large) and should open elsewhere.
+ * Quiet is for reopening files at start: one deleted since then is skipped without a message.
+ */
+async function openInEditor(relative: string, quiet = false): Promise<boolean> {
   let file = openFiles.find((f) => f.path === relative);
   if (!file) {
     const answer: { text?: string; mtime?: number; bom?: boolean; error?: string; code?: string } = await api.invoke("files:read", relative);
     if (answer.error) {
-      if (answer.code) return false;
+      if (answer.code || quiet) return false;
       toast(answer.error, true);
       return true;
     }
@@ -2377,6 +2603,47 @@ async function activate(file: OpenFile): Promise<void> {
   }
   renderEditorTabs();
   showEditorState();
+  rememberOpenFiles();
+}
+
+/*
+ * Which files are open, per project folder, so a reload or a restart opens them again. Only this
+ * window's storage keeps it; without storage the files are simply not reopened.
+ */
+const OPEN_FILES_KEY = "openFiles:";
+/** Set while files close because the folder changes, so the new folder's list is not overwritten. */
+let keepOpenList = false;
+
+function rememberOpenFiles(): void {
+  if (keepOpenList || !workspace?.folder) return;
+  try {
+    localStorage.setItem(OPEN_FILES_KEY + workspace.folder, JSON.stringify({ files: openFiles.map((f) => f.path), active: current?.path ?? null }));
+  } catch {
+    // storage unavailable
+  }
+}
+
+async function restoreOpenFiles(): Promise<void> {
+  if (!workspace.folder) return;
+  let saved: { files?: unknown; active?: unknown } = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(OPEN_FILES_KEY + workspace.folder) || "{}");
+  } catch {
+    return;
+  }
+  if (!Array.isArray(saved.files)) return;
+  const paths = saved.files.filter((p): p is string => typeof p === "string");
+  if (!paths.length) return;
+  keepOpenList = true;
+  try {
+    for (const path of paths) await openInEditor(path, true);
+    const active = openFiles.find((f) => f.path === saved.active);
+    if (active) await activate(active);
+  } finally {
+    keepOpenList = false;
+    // Files deleted since are left out of the list from now on.
+    rememberOpenFiles();
+  }
 }
 
 function renderEditorTabs(): void {
@@ -2454,6 +2721,7 @@ function closeFile(file: OpenFile): void {
   file.original?.dispose();
   renderEditorTabs();
   $("editorShow").textContent = `Editor (${openFiles.length})`;
+  rememberOpenFiles();
 }
 
 /** Close every open file at once, unsaved edits included (the caller has already asked the user). */
@@ -2579,13 +2847,14 @@ window.addEventListener("beforeunload", (event) => {
     $("filesToggle").classList.add("on");
   }
   render();
+  void restoreOpenFiles();
   offerSharedNotes();
   showUnfinished();
   showFreeHint();
   await refreshAccounts();
   offerFoundFolders();
   showSorting(await api.invoke("sorting:get"));
-  // Hey Recon listens from the start, so saying its name is enough; the header button turns it off.
+  // Recon listens from the start, so saying its name is enough; the header button turns it off.
   if (workspace.voiceOn !== false) void voiceStart();
   showUsage();
   setInterval(showUsage, USAGE_REFRESH_MS);

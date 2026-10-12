@@ -4,7 +4,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 const INVOKE = [
   "workspace:get", "workspace:pick-folder", "workspace:set-folder", "workspace:layout", "profile:options", "profile:add", "profile:remove",
-  "brain:search", "session:resume", "sorting:get", "sorting:toggle", "folders:unused", "folders:adopt", "folders:dismiss", "profile:accounts", "free:get", "free:save", "free:test",
+  "brain:search", "session:resume", "sorting:get", "sorting:toggle", "folders:unused", "folders:adopt", "folders:dismiss", "profile:accounts", "free:get", "free:save", "free:test", "free:key-page",
   "brain:unfinished", "note:add", "note:remove", "session:remove", "share:info", "share:export", "share:import", "kit:get", "kit:set", "profile:role", "role:list", "role:save", "role:remove",
   "ui:save", "update:install", "mic:transcribe", "term:deliver-now", "files:list", "files:open", "files:reveal", "files:read", "files:changed-at", "files:write", "files:committed", "files:vscode", "profile:rename",
   "voice:wake", "voice:ask", "usage:get", "term:paste",

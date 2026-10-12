@@ -51,7 +51,10 @@
       "node_modules/onnxruntime-common/**",
       "node_modules/@huggingface/tokenizers/**",
       "node_modules/@huggingface/transformers/**",
-      "node_modules/sharp/**"
+      "node_modules/sharp/**",
+      "node_modules/@img/**",
+      "node_modules/detect-libc/**",
+      "node_modules/semver/**"
     ],
     "win": {
       "target": "nsis",

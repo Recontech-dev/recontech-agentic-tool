@@ -97,9 +97,11 @@ Under each Claude terminal, a thin bar shows that terminal's own usage:
 - **Session:** its tokens in the current 5-hour session window and when the window ends. Claude's session limits count in windows like this one; the window is estimated from message times.
 - **Limit:** **Within limit**, **Near limit** or **Limit reached**, with the reset time, as Claude Code last printed in that terminal. It clears once Claude answers there again.
 
+**Per account.** Below the tiles, each Claude account has a row: **Session** and **Week** are the share of that account's plan limit used, asked of Anthropic with the account's own sign-in the way Claude Code's `/usage` does, so they match the Claude app and count everything the account did (the Claude app, claude.ai, other computers). The token columns (week, month, year, total) count Claude Code on this computer only; Anthropic does not report token counts. An account whose sign-in has expired (Claude unused there for some hours) shows *expired* until Claude runs in its terminal again. Each terminal's bar uses the same percentages.
+
 **Budgets.** Every Claude terminal always has a Session bar; until you set a session budget it shows how far into its 5-hour window that terminal is (click the bar to set one). To see Week and Session as bars toward token figures, type a budget into the **Budget** row under the tiles: one for a **Session**, one for a **Week**, as a number of tokens such as `2M`, `500K` or `2,000,000`. Use your plan's figures or what you want to stay under. Every Claude terminal's bar then fills toward them ("Session 340K of 2M"): amber from 80%, red at 100% or more. The budgets apply to all Claude terminals and are saved with your workspace; leave a box empty for no bar.
 
-The numbers come from the usage figures Claude Code writes into its own session files on your computer, counted once each, and nothing is sent anywhere. Your plan's actual limits are not stored on your computer, so the app can show how much was used, what Claude Code said and how it compares with your own budgets, but not a percentage of your real limit. Ollama and Free models terminals are not counted.
+The numbers come from the usage figures Claude Code writes into its own session files on your computer, counted once each, and nothing is sent anywhere. The session and weekly percentages are the one thing asked of Anthropic, with each account's own sign-in (read only, never changed); everything else stays on your computer. Ollama and Free models terminals are not counted.
 
 ### Project kits
 

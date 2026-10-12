@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { beforeEach, test } from "node:test";
 
+import { readLimits } from "../brain/limits";
 import { SESSION_MS, folderUsage, summarize, tokenUsage, usageFile, usageOf } from "../brain/usage";
 
 let root = "";
@@ -114,7 +115,8 @@ test("a terminal's session window starts on the hour of its first message and la
   usage = folderUsage([{ messages: { ...messages, d: e(base + 5 * hour + 40 * 60_000, 7) } }], new Date(base + 6 * hour));
   assert.equal(usage.session?.start, base + 5 * hour);
   assert.equal(usage.session?.tokens.output, 7);
-  assert.deepEqual(folderUsage([], new Date(base)), { week: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 }, session: null, last: 0 });
+  const none = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 };
+  assert.deepEqual(folderUsage([], new Date(base)), { week: none, month: none, year: none, all: none, since: 0, session: null, last: 0 });
 });
 
 test("each Claude Code folder gets its own week and session, next to the shared totals", async () => {
@@ -127,6 +129,9 @@ test("each Claude Code folder gets its own week and session, next to the shared 
   assert.equal(usage.all.total, 66);
   assert.equal(usage.folders[path.resolve(one)].week.total, 11);
   assert.equal(usage.folders[path.resolve(two)].week.total, 55);
+  // Each account also has its own month, year and total, not only the sum over all of them.
+  assert.equal(usage.folders[path.resolve(two)].all.total, 55);
+  assert.equal(usage.folders[path.resolve(one)].year.total, 11);
   assert.equal(usage.folders[path.resolve(two)].session?.tokens.total, 55);
   assert.equal(usage.folders[path.resolve(one)].last, Date.parse(today));
 });
@@ -171,4 +176,19 @@ test("a version 1 cache is counted again from the transcripts, keeping those tha
   const usage = await tokenUsage([dir]);
   assert.equal(usage.all.output, 48, "40 recounted from the transcript, 8 kept from the deleted one");
   assert.equal(JSON.parse(fs.readFileSync(usageFile(), "utf8")).version, 2);
+});
+
+test("an account's session and weekly limits are read from Anthropic's usage answer", () => {
+  const answer = {
+    five_hour: { utilization: 1.0, resets_at: "2026-10-12T20:40:00.467077+00:00" },
+    seven_day: { utilization: 48.0, resets_at: "2026-10-13T01:00:00+00:00" },
+    seven_day_opus: null,
+  };
+  const limits = readLimits(answer, "pro", 5);
+  assert.deepEqual(limits.session, { percent: 1, resets: Date.parse("2026-10-12T20:40:00.467Z") });
+  assert.equal(limits.week?.percent, 48);
+  assert.equal(limits.plan, "pro");
+  // A window Anthropic leaves out (null) or an answer of another shape is no limit, not a crash.
+  assert.equal(readLimits({ five_hour: null }, "", 0).session, null);
+  assert.deepEqual(readLimits(null, "", 0), { session: null, week: null, plan: "", at: 0 });
 });
