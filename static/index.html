@@ -47,9 +47,19 @@
   .bar button, .bar select { flex:none; }
   .bar .spacer { flex:0 0 0; }
   .term { flex:1; min-height:0; padding:4px 6px; }
+  .usagebar { display:flex; gap:10px; align-items:center; padding:2px 8px; font-size:11px; color:var(--dim); background:#0d1015;
+              border-top:1px solid var(--line); white-space:nowrap; overflow:hidden; font-variant-numeric:tabular-nums; flex:none; }
+  .usagebar[hidden] { display:none; }
+  .usagebar span { overflow:hidden; text-overflow:ellipsis; }
+  .usagebar .limit { margin-left:auto; flex:none; max-width:55%; }
+  .usagebar .limit::before { content:"●"; margin-right:4px; }
+  .usagebar .limit.ok::before { color:var(--open); }
+  .usagebar .limit.near { color:var(--topic); }
+  .usagebar .limit.reached { color:#ff9b9b; font-weight:600; }
   .xterm-viewport::-webkit-scrollbar { width:8px; background:transparent; }
   .xterm-viewport::-webkit-scrollbar-thumb { background:#2f3845; border-radius:4px; }
-  #brain { flex:2; min-width:0; max-width:620px; display:flex; flex-direction:column; border-left:1px solid var(--line); }
+  /* A quarter of the width until the user drags the divider: on a first run the graph is still empty. */
+  #brain { flex:1; min-width:0; max-width:460px; display:flex; flex-direction:column; border-left:1px solid var(--line); }
   #brain[hidden] { display:none; }
   #brainbar { display:flex; gap:8px; margin:8px; align-items:center; flex-wrap:wrap; }
   #search { flex:1 1 140px; min-width:140px; }
@@ -162,6 +172,15 @@
   /* Two by two when the brain panel is narrow, whatever the window's width. */
   #usage { container-type:inline-size; }
   @container (max-width:400px) { #usageTiles { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+  /* It never takes over the brain column: at most a third of it, and on short windows just the numbers. */
+  #usage[open] { max-height:33%; overflow:auto; }
+  @media (max-height:720px) {
+    #usageTiles { gap:4px; padding:0 6px 6px; }
+    .usage-tile { padding:3px 6px; }
+    .usage-tile .split { display:none; }
+    .usage-tile .value { font-size:14px; line-height:1.2; }
+    #usage summary { padding:4px 8px; }
+  }
   #voice { margin:8px; border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:flex; flex-direction:column; gap:6px; max-height:38%; flex:none; }
   #voice[hidden] { display:none; }
   #voiceHead { display:flex; align-items:center; gap:8px; }

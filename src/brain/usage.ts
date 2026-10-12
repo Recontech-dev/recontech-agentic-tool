@@ -24,7 +24,21 @@ export interface UsageSummary {
   all: Tokens;
   /** When the first counted message was sent (ms), or 0 when there is none. */
   since: number;
+  /** The same per Claude Code folder (keyed by its resolved path), for each terminal's own bar. */
+  folders: Record<string, FolderUsage>;
 }
+
+/** One Claude Code folder's usage: what a terminal's own bar shows. */
+export interface FolderUsage {
+  week: Tokens;
+  /** The 5-hour session window in progress (Claude's session limit counts per window), or null when none is. */
+  session: { start: number; end: number; tokens: Tokens } | null;
+  /** When its latest answer was sent (ms), or 0. */
+  last: number;
+}
+
+/** Claude's session limits count usage in windows of 5 hours from the first message of a window. */
+export const SESSION_MS = 5 * 60 * 60 * 1000;
 
 /** One answer from the model: when it was sent, and its input, output, cache-write and cache-read tokens. */
 type Entry = [time: number, input: number, output: number, cacheWrite: number, cacheRead: number];
@@ -176,35 +190,64 @@ async function scan(configDirs: string[], now: Date): Promise<UsageSummary> {
     fs.mkdirSync(path.dirname(usageFile()), { recursive: true });
     fs.writeFileSync(usageFile(), JSON.stringify(cache), "utf8");
   }
-  return summarize(Object.values(cache.files), now);
+  const folders: Record<string, FolderUsage> = {};
+  for (const dir of new Set(configDirs.map((d) => path.resolve(d)))) {
+    const root = path.join(dir, "projects") + path.sep;
+    folders[dir] = folderUsage(Object.entries(cache.files).filter(([file]) => file.startsWith(root)).map(([, state]) => state), now);
+  }
+  return { ...summarize(Object.values(cache.files), now), folders };
+}
+
+/**
+ * One folder's week and current session window. A window starts at the hour of the first message
+ * after the previous window ended and lasts 5 hours, which is how Claude's session limit is reckoned
+ * as far as it can be seen from the outside; the real limit and its exact window are not on disk.
+ */
+export function folderUsage(files: { messages: Record<string, Entry> }[], now = new Date()): FolderUsage {
+  const entries = new Map<string, Entry>();
+  for (const file of files) for (const [key, entry] of Object.entries(file.messages)) if (!entries.has(key)) entries.set(key, entry);
+  const sorted = [...entries.values()].sort((a, b) => a[0] - b[0]);
+  let start = 0;
+  for (const [time] of sorted) {
+    if (time > now.getTime()) break;
+    if (!start || time >= start + SESSION_MS) start = Math.floor(time / 3_600_000) * 3_600_000;
+  }
+  let session: FolderUsage["session"] = null;
+  if (start && now.getTime() < start + SESSION_MS) {
+    const tokens = empty();
+    for (const entry of sorted) if (entry[0] >= start && entry[0] <= now.getTime()) add(tokens, entry);
+    session = { start, end: start + SESSION_MS, tokens };
+  }
+  return { week: summarize(files, now).week, session, last: sorted.length ? sorted[sorted.length - 1][0] : 0 };
 }
 
 const empty = (): Tokens => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 });
+function add(t: Tokens, [, input, output, cacheWrite, cacheRead]: Entry): void {
+  t.input += input;
+  t.output += output;
+  t.cacheWrite += cacheWrite;
+  t.cacheRead += cacheRead;
+  t.total += input + output + cacheWrite + cacheRead;
+}
 
 /** Sums the messages per period: this week (from Monday), this month and this year, in local time, and all of it. */
-export function summarize(files: { messages: Record<string, Entry> }[], now = new Date()): UsageSummary {
+export function summarize(files: { messages: Record<string, Entry> }[], now = new Date()): Omit<UsageSummary, "folders"> {
   const day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const week = new Date(day);
   week.setDate(day.getDate() - ((day.getDay() + 6) % 7));
   const starts = { week: week.getTime(), month: new Date(now.getFullYear(), now.getMonth(), 1).getTime(), year: new Date(now.getFullYear(), 0, 1).getTime() };
-  const summary: UsageSummary = { week: empty(), month: empty(), year: empty(), all: empty(), since: 0 };
+  const summary: Omit<UsageSummary, "folders"> = { week: empty(), month: empty(), year: empty(), all: empty(), since: 0 };
   // The same answer can be in two transcripts (a resumed session copies its history); it counts once.
   const counted = new Set<string>();
   for (const file of files) {
-    for (const [key, [time, input, output, cacheWrite, cacheRead]] of Object.entries(file.messages)) {
+    for (const [key, entry] of Object.entries(file.messages)) {
       if (counted.has(key)) continue;
       counted.add(key);
-      const add = (t: Tokens) => {
-        t.input += input;
-        t.output += output;
-        t.cacheWrite += cacheWrite;
-        t.cacheRead += cacheRead;
-        t.total += input + output + cacheWrite + cacheRead;
-      };
-      add(summary.all);
-      if (time >= starts.year) add(summary.year);
-      if (time >= starts.month) add(summary.month);
-      if (time >= starts.week) add(summary.week);
+      const time = entry[0];
+      add(summary.all, entry);
+      if (time >= starts.year) add(summary.year, entry);
+      if (time >= starts.month) add(summary.month, entry);
+      if (time >= starts.week) add(summary.week, entry);
       if (!summary.since || time < summary.since) summary.since = time;
     }
   }

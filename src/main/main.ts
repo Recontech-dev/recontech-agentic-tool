@@ -518,9 +518,16 @@ ipcMain.handle("profile:remove", (_event, id: string) =>
 ipcMain.handle("brain:search", (_event, query: string) => brain.searchSmart(String(query), 20));
 ipcMain.handle("brain:unfinished", () => brain.unfinished(workspace.folder));
 // Claude tokens only: Ollama and Free models terminals also write usage, but those are not Claude's.
-ipcMain.handle("usage:get", () =>
-  tokenUsage(workspace.profiles.filter((p) => (p.kind ?? "claude") === "claude").map(configDirOf)).catch((error) => ({ error: String(error?.message ?? error) })),
-);
+// The renderer also gets each Claude profile's own week and session window, by profile id, for the bar under its terminal.
+ipcMain.handle("usage:get", async () => {
+  const claude = workspace.profiles.filter((p) => (p.kind ?? "claude") === "claude");
+  try {
+    const { folders, ...usage } = await tokenUsage(claude.map(configDirOf));
+    return { ...usage, profiles: Object.fromEntries(claude.map((p) => [p.id, folders[path.resolve(configDirOf(p))]]).filter(([, u]) => u)) };
+  } catch (error) {
+    return { error: String((error as Error)?.message ?? error) };
+  }
+});
 ipcMain.handle("note:add", (_event, text: string) =>
   result(() => {
     if (!workspace.folder) throw new Error("Choose a project folder first.");

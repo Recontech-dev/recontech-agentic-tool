@@ -407,6 +407,13 @@ function makePanel(profile: Profile): void {
   const body = document.createElement("div");
   body.className = "term";
   panel.append(bar, body);
+  // Under the terminal: its own weekly and session usage, and whether Claude Code said it hit a limit.
+  const usageBar = document.createElement("div");
+  usageBar.className = "usagebar";
+  usageBar.dataset.profile = profile.id;
+  usageBar.hidden = (profile.kind ?? "claude") !== "claude";
+  panel.append(usageBar);
+  showUsageBars();
   $("panels").append(panel);
 
   const term = new Terminal({ cursorBlink: true, fontFamily: "Consolas, 'Cascadia Mono', Menlo, monospace", fontSize: workspace.fontSize ?? 13,
@@ -416,7 +423,7 @@ function makePanel(profile: Profile): void {
   term.open(body);
   // Ctrl+Alt+1..6, Ctrl+Alt+B, Ctrl+Alt+F and Ctrl+Alt+0 (text size back to normal) belong to the app
   // (switch terminal, show or hide the brain or the files), not to the terminal.
-  term.attachCustomKeyEventHandler((event: KeyboardEvent) => !(event.ctrlKey && event.altKey && /^[0-6bef]$/i.test(event.key)));
+  term.attachCustomKeyEventHandler((event: KeyboardEvent) => !(appShortcut(event) && /^[0-6bef]$/i.test(event.key)));
   term.onData((data: string) => api.send("term:input", profile.id, data));
   term.onResize(({ cols, rows }: { cols: number; rows: number }) => api.send("term:resize", profile.id, cols, rows));
   // A click on the bar's own controls (the role list above all) must keep focus there: moving it to
@@ -539,6 +546,7 @@ function render(): void {
     revealedEmails.delete(id);
     recentText.delete(id);
     limitShownAt.delete(id);
+    limitStates.delete(id);
     // A recording in a removed terminal would otherwise keep the microphone on.
     const recording = micRecordings.get(id);
     if (recording) {
@@ -659,6 +667,7 @@ function watchForLimit(id: string, data: string): void {
   const plain = data.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g, "");
   const tail = ((recentText.get(id) ?? "") + plain).slice(-400);
   recentText.set(id, tail);
+  noteLimitState(id, tail);
   if (!LIMIT_TEXT.test(tail)) return;
   recentText.set(id, "");
   if (Date.now() - (limitShownAt.get(id) ?? 0) < 10 * 60 * 1000) return;
@@ -981,8 +990,15 @@ $("divider").addEventListener("pointerdown", (event) => {
   divider.addEventListener("pointerup", stop);
 });
 
+/**
+ * Ctrl+Alt with a key is one of the app's shortcuts. AltGr counts as Ctrl+Alt on Windows, but on
+ * many European layouts it types characters (AltGr+7 is "{" in German), so it is left to the terminal.
+ */
+function appShortcut(event: KeyboardEvent): boolean {
+  return event.ctrlKey && event.altKey && !event.getModifierState("AltGraph");
+}
 window.addEventListener("keydown", (event) => {
-  if (!event.ctrlKey || !event.altKey) return;
+  if (!appShortcut(event)) return;
   if (/^[1-6]$/.test(event.key)) {
     const profile = workspace.profiles[Number(event.key) - 1];
     if (profile) select(profile.id);
@@ -1152,7 +1168,8 @@ $("kit").addEventListener("change", async () => {
 // process from Claude Code's own transcripts. The first count can take a few seconds; later ones are quick.
 
 interface Tokens { input: number; output: number; cacheWrite: number; cacheRead: number; total: number }
-interface UsageSummary { week: Tokens; month: Tokens; year: Tokens; all: Tokens; since: number }
+interface FolderUsage { week: Tokens; session: { start: number; end: number; tokens: Tokens } | null; last: number }
+interface UsageSummary { week: Tokens; month: Tokens; year: Tokens; all: Tokens; since: number; profiles: Record<string, FolderUsage> }
 
 const USAGE_REFRESH_MS = 60_000;
 const USAGE_OPEN_KEY = "usageOpen";
@@ -1166,9 +1183,9 @@ function shortCount(n: number): string {
 }
 
 let usageBusy = false;
+let lastUsage: UsageSummary | null = null;
 async function showUsage(): Promise<void> {
-  // Nothing to update while it cannot be seen; it catches up when shown again.
-  if (usageBusy || $("brain").hidden || !($("usage") as HTMLDetailsElement).open) return;
+  if (usageBusy) return;
   usageBusy = true;
   const state = $("usageState");
   if (!$("usageTiles").childElementCount) state.textContent = "Counting…";
@@ -1179,9 +1196,13 @@ async function showUsage(): Promise<void> {
       state.title = usage.error;
       return;
     }
+    lastUsage = usage;
+    showUsageBars();
+    // The tiles are only redrawn while they can be seen; they catch up when shown again.
+    if ($("brain").hidden || !($("usage") as HTMLDetailsElement).open) return;
     const tiles = $("usageTiles");
     tiles.textContent = "";
-    const periods: [keyof Omit<UsageSummary, "since">, string][] = [["week", "This week"], ["month", "This month"], ["year", "This year"], ["all", "Total"]];
+    const periods: [keyof Omit<UsageSummary, "since" | "profiles">, string][] = [["week", "This week"], ["month", "This month"], ["year", "This year"], ["all", "Total"]];
     for (const [key, name] of periods) {
       const t = usage[key];
       const tile = document.createElement("div");
@@ -1209,6 +1230,60 @@ async function showUsage(): Promise<void> {
     usageBusy = false;
   }
 }
+/*
+ * Each Claude terminal's own bar: its tokens this week and in the 5-hour session window in progress,
+ * and the usage-limit state Claude Code last printed in it (reached, or a warning that it is close).
+ * Claude's real limits are not on this computer, so closeness is only known when Claude Code says so.
+ */
+const LIMIT_NEAR_TEXT = /(approaching (?:your )?(?:usage |session |weekly |5-hour )?limit|used (\d{1,3})% of your (?:session |weekly |5-hour |usage )?limit)/i;
+const RESET_TEXT = /\breset(?:s|s at| at)?\s+(?:at\s+)?([^\n\r]{1,40}?)(?=\s{2,}|[.\n\r]|$)/i;
+interface LimitState { level: "reached" | "near"; weekly: boolean; resets: string; at: number }
+const limitStates = new Map<string, LimitState>();
+
+/** Remembers what Claude Code just said about the limit in a terminal, from the plain text it printed. */
+function noteLimitState(id: string, tail: string): void {
+  const level = LIMIT_TEXT.test(tail) ? "reached" : LIMIT_NEAR_TEXT.test(tail) ? "near" : null;
+  if (!level) return;
+  const before = limitStates.get(id);
+  // The same message stays in the tail for a while; it keeps the time it was first seen.
+  if (before?.level === level) return;
+  limitStates.set(id, { level, weekly: /weekly/i.test(tail), resets: RESET_TEXT.exec(tail)?.[1].trim() ?? "", at: Date.now() });
+  showUsageBars();
+}
+
+function showUsageBars(): void {
+  const now = Date.now();
+  for (const bar of document.querySelectorAll<HTMLElement>(".usagebar")) {
+    const id = bar.dataset.profile ?? "";
+    const usage = lastUsage?.profiles?.[id];
+    let limit = limitStates.get(id);
+    // A new answer after the message means the limit has lifted; a session limit lifts within 5 hours anyway.
+    if (limit && ((usage && usage.last > limit.at + 60_000) || (!limit.weekly && now - limit.at > 5 * 3_600_000))) {
+      limitStates.delete(id);
+      limit = undefined;
+    }
+    const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const week = document.createElement("span");
+    week.textContent = `Week ${usage ? shortCount(usage.week.total) : "–"}`;
+    const session = document.createElement("span");
+    session.textContent = usage?.session ? `Session ${shortCount(usage.session.tokens.total)} · until ~${time(usage.session.end)}` : "No session in progress";
+    const status = document.createElement("span");
+    status.className = `limit ${limit?.level ?? "ok"}`;
+    status.textContent = limit
+      ? `${limit.level === "reached" ? (limit.weekly ? "Weekly limit reached" : "Limit reached") : "Near limit"}${limit.resets ? ` · resets ${limit.resets}` : ""}`
+      : "Within limit";
+    bar.replaceChildren(week, session, status);
+    bar.title = (usage
+      ? `This week: ${usage.week.total.toLocaleString()} tokens (${usage.week.output.toLocaleString()} output).\n` +
+        (usage.session
+          ? `Session window ${time(usage.session.start)} to ${time(usage.session.end)}: ${usage.session.tokens.total.toLocaleString()} tokens (${usage.session.tokens.output.toLocaleString()} output).\n`
+          : "No 5-hour session window in progress.\n")
+      : "Not counted yet.\n") +
+      "Session windows are estimated from message times. Claude's own limits are not on this computer, " +
+      "so the limit state shows what Claude Code last printed in this terminal.";
+  }
+}
+
 try {
   if (localStorage.getItem(USAGE_OPEN_KEY) === "0") ($("usage") as HTMLDetailsElement).open = false;
 } catch {
@@ -1282,7 +1357,12 @@ async function showUnfinished(): Promise<void> {
   const items: { title: string; project: string; folder: string; profile: string; id: string; ended: string; type: string; here: boolean }[] = await api.invoke("brain:unfinished");
   $("todo").hidden = !items.length;
   const here = items.filter((i) => i.here).length;
-  $("todoTitle").textContent = `Unfinished work: ${here} in this project, ${items.length - here} elsewhere`;
+  // Without a project folder there is no "this project" to count.
+  $("todoTitle").textContent = !workspace.folder
+    ? `Unfinished work: ${items.length} across your projects`
+    : here
+      ? `Unfinished work: ${here} in this project, ${items.length - here} elsewhere`
+      : `Unfinished work: none in this project, ${items.length} elsewhere`;
   const list = $("todoList");
   list.textContent = "";
   for (const item of items.slice(0, 30)) {

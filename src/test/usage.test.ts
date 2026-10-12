@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { beforeEach, test } from "node:test";
 
-import { summarize, tokenUsage, usageFile, usageOf } from "../brain/usage";
+import { SESSION_MS, folderUsage, summarize, tokenUsage, usageFile, usageOf } from "../brain/usage";
 
 let root = "";
 beforeEach(() => {
@@ -92,6 +92,43 @@ test("transcripts are read once, then only what was added, across profiles and s
   fs.rmSync(file);
   assert.equal((await tokenUsage([one, two], now)).all.total, 75);
   assert.equal((await tokenUsage([two], now)).all.total, 65);
+});
+
+test("a terminal's session window starts on the hour of its first message and lasts five hours", () => {
+  const hour = 3_600_000;
+  const base = Date.UTC(2026, 9, 14, 8); // 08:00 UTC
+  const e = (time: number, output: number): [number, number, number, number, number] => [time, 0, output, 0, 0];
+  const messages = {
+    old: e(base - 20 * hour, 1000), // an earlier window, long over
+    a: e(base + 20 * 60_000, 10), // 08:20 opens a window that runs from 08:00 to 13:00
+    b: e(base + 3 * hour, 20),
+    c: e(base + 4.9 * hour, 30),
+  };
+  let usage = folderUsage([{ messages }], new Date(base + 4.95 * hour));
+  assert.deepEqual(usage.session && { start: usage.session.start, end: usage.session.end, output: usage.session.tokens.output }, { start: base, end: base + SESSION_MS, output: 60 });
+  assert.equal(usage.last, base + 4.9 * hour);
+
+  // After 13:00 with no new message, no window is in progress.
+  assert.equal(folderUsage([{ messages }], new Date(base + 5.5 * hour)).session, null);
+  // A message at 13:40 opens the next window at 13:00, holding only what came after.
+  usage = folderUsage([{ messages: { ...messages, d: e(base + 5 * hour + 40 * 60_000, 7) } }], new Date(base + 6 * hour));
+  assert.equal(usage.session?.start, base + 5 * hour);
+  assert.equal(usage.session?.tokens.output, 7);
+  assert.deepEqual(folderUsage([], new Date(base)), { week: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 }, session: null, last: 0 });
+});
+
+test("each Claude Code folder gets its own week and session, next to the shared totals", async () => {
+  const now = new Date();
+  const today = now.toISOString();
+  const one = path.join(root, "claude-one"), two = path.join(root, "claude-two");
+  transcript(one, "a.jsonl", [answer("m1", today, 1, 10)]);
+  transcript(two, "b.jsonl", [answer("m2", today, 2, 20), answer("m3", today, 3, 30)]);
+  const usage = await tokenUsage([one, two], now);
+  assert.equal(usage.all.total, 66);
+  assert.equal(usage.folders[path.resolve(one)].week.total, 11);
+  assert.equal(usage.folders[path.resolve(two)].week.total, 55);
+  assert.equal(usage.folders[path.resolve(two)].session?.tokens.total, 55);
+  assert.equal(usage.folders[path.resolve(one)].last, Date.parse(today));
 });
 
 test("calls made while a scan is running share it", async () => {
