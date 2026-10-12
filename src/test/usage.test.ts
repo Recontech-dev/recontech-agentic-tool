@@ -54,9 +54,9 @@ test("tokens are summed per week, month, year and in total, each answer once", (
   ];
   const sum = summarize(files, now);
   assert.equal(sum.week.total, 30);
-  assert.deepEqual(sum.month, { input: 11, output: 22, cacheWrite: 3, cacheRead: 4, total: 40 });
-  assert.equal(sum.year.total, 140);
-  assert.equal(sum.all.total, 1140);
+  assert.deepEqual(sum.month, { input: 11, output: 22, cacheWrite: 3, cacheRead: 4, total: 36 }, "cache reads are kept apart from the total");
+  assert.equal(sum.year.total, 136);
+  assert.equal(sum.all.total, 1136);
   assert.equal(sum.since, at(2025, 11, 31));
   assert.equal(summarize([], now).since, 0);
 });
@@ -137,4 +137,38 @@ test("calls made while a scan is running share it", async () => {
   const [a, b] = [tokenUsage([dir]), tokenUsage([dir])];
   assert.equal(a, b);
   assert.equal((await a).all.total, 3);
+});
+
+test("an answer whose lines carry growing counts while it streams keeps its final ones", async () => {
+  const today = new Date().toISOString();
+  const dir = path.join(root, "claude");
+  transcript(dir, "s.jsonl", [answer("m1", today, 3, 1, 0, 500), answer("m1", today, 3, 40, 0, 500)]);
+  const usage = await tokenUsage([dir]);
+  assert.deepEqual(usage.all, { input: 3, output: 40, cacheWrite: 0, cacheRead: 500, total: 43 });
+});
+
+test("an answer without cache fields, or with them in other shapes, counts what is there", () => {
+  const time = "2026-10-12T10:00:00Z";
+  const old = JSON.stringify({ type: "assistant", requestId: "r1", timestamp: time, message: { id: "m1", usage: { input_tokens: 4, output_tokens: 6 } } });
+  assert.deepEqual(usageOf(old)?.[1].slice(1), [4, 6, 0, 0]);
+  const odd = JSON.stringify({ type: "assistant", requestId: "r2", timestamp: time, message: { id: "m2", usage: {
+    input_tokens: 1, output_tokens: 2, cache_creation_input_tokens: "7", cache_read_input_tokens: null,
+    cache_creation: { ephemeral_5m_input_tokens: 5, ephemeral_1h_input_tokens: 0 } } } });
+  assert.deepEqual(usageOf(odd)?.[1].slice(1), [1, 2, 0, 0]);
+});
+
+test("a version 1 cache is counted again from the transcripts, keeping those that were deleted since", async () => {
+  const dir = path.join(root, "claude");
+  const today = new Date().toISOString();
+  const kept = transcript(dir, "kept.jsonl", [answer("m1", today, 3, 40, 0, 500)]);
+  const gone = path.join(dir, "projects", "d--proj", "gone.jsonl");
+  fs.mkdirSync(path.dirname(usageFile()), { recursive: true });
+  fs.writeFileSync(usageFile(), JSON.stringify({ version: 1, files: {
+    // Stale counts for a transcript still on disk, and the only record of one Claude Code deleted.
+    [path.resolve(kept)]: { size: fs.statSync(kept).size, modified: fs.statSync(kept).mtimeMs, offset: 0, messages: { "m1:req_m1": [Date.parse(today), 3, 1, 0, 500] } },
+    [path.resolve(gone)]: { size: 10, modified: 1, offset: 10, messages: { "m9:req_m9": [Date.parse(today), 2, 8, 0, 0] } },
+  } }));
+  const usage = await tokenUsage([dir]);
+  assert.equal(usage.all.output, 48, "40 recounted from the transcript, 8 kept from the deleted one");
+  assert.equal(JSON.parse(fs.readFileSync(usageFile(), "utf8")).version, 2);
 });

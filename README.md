@@ -87,7 +87,7 @@ Click **🎙 Hey Recon** in the header to turn on the voice assistant; click it 
 
 ### Token usage
 
-**Tokens used**, above the graph, shows how many Claude tokens all your Claude profiles used **this week** (from Monday), **this month**, **this year** and in **total**. Point at a tile for input, output and cache figures; most of a total is earlier conversation that Claude reads back from its cache on each turn. Click the heading to fold the panel away.
+**Tokens used**, above the graph, shows how many Claude tokens all your Claude profiles used **this week** (from Monday), **this month**, **this year** and in **total**. The totals count input, output and tokens written to the cache. Tokens read back from the cache are left out: Claude reads the whole earlier conversation back from its cache on each turn, so they would make up nearly all of a total and drown out the work itself. Point at a tile for input, output and both cache figures. Click the heading to fold the panel away.
 
 Under each Claude terminal, a thin bar shows that terminal's own usage:
 

@@ -13,7 +13,10 @@ export interface Tokens {
   output: number;
   cacheWrite: number;
   cacheRead: number;
-  /** All four together. */
+  /**
+   * Input, output and cache writes. Cache reads are left out: each turn reads the whole conversation
+   * back from the cache, so they are usually over 95% of the raw sum and would drown out the rest.
+   */
   total: number;
 }
 
@@ -56,13 +59,20 @@ interface Cache {
   files: Record<string, FileState>;
 }
 
-const VERSION = 1;
+// 2: an answer written over several lines keeps its largest counts, not the first line's.
+const VERSION = 2;
 export const usageFile = () => path.join(home(), "brain", "usage.json");
 
 function loadCache(): Cache {
   try {
     const data = JSON.parse(fs.readFileSync(usageFile(), "utf8"));
     if (data?.version === VERSION && data.files && typeof data.files === "object") return data;
+    // From version 1, transcripts still on disk are counted again. Ones Claude Code has since deleted
+    // (it removes old ones by itself) are only in this cache, so their counts are kept.
+    if (data?.version === 1 && data.files && typeof data.files === "object") {
+      for (const file of Object.keys(data.files)) if (fs.existsSync(file)) delete data.files[file];
+      return { version: VERSION, files: data.files };
+    }
   } catch {
     // Missing or unreadable: everything is counted again from the transcripts.
   }
@@ -126,7 +136,9 @@ async function readFrom(file: string, start: number, into: Record<string, Entry>
       let from = 0;
       for (let at = data.indexOf(0x0a); at !== -1; at = data.indexOf(0x0a, from)) {
         const found = usageOf(data.toString("utf8", from, at));
-        if (found && !into[found[0]]) into[found[0]] = found[1];
+        // The lines of one answer can carry growing counts while it streams; the largest are its final ones.
+        // Its time stays that of its first line.
+        if (found) into[found[0]] = into[found[0]] ? (into[found[0]].map((n, i) => (i ? Math.max(n, found[1][i]) : n)) as Entry) : found[1];
         from = at + 1;
       }
       offset += from;
@@ -227,7 +239,7 @@ function add(t: Tokens, [, input, output, cacheWrite, cacheRead]: Entry): void {
   t.output += output;
   t.cacheWrite += cacheWrite;
   t.cacheRead += cacheRead;
-  t.total += input + output + cacheWrite + cacheRead;
+  t.total += input + output + cacheWrite;
 }
 
 /** Sums the messages per period: this week (from Monday), this month and this year, in local time, and all of it. */

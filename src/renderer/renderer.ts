@@ -1200,7 +1200,7 @@ async function showUsage(): Promise<void> {
       tile.title = `${name}: ${exact(t.total)} tokens\n` +
         `Output (Claude's answers): ${exact(t.output)}\nInput: ${exact(t.input)}\n` +
         `Written to cache: ${exact(t.cacheWrite)}\nRead from cache: ${exact(t.cacheRead)}\n` +
-        "Most of a total is usually context read back from the cache on each turn.";
+        "The total leaves out cache reads: each turn reads the whole conversation back from the cache, so they would be most of it.";
       tile.append(label, value, split);
       tiles.append(tile);
     }
