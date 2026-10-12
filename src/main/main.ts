@@ -272,6 +272,9 @@ let transcriber: ChildProcess | null = null;
 let transcriberStatus: Record<string, unknown> = { status: "off" };
 let transcriberReady: Promise<void> | null = null;
 const transcribePending = new Map<string, (answer: { text?: string; error?: string }) => void>();
+// After the worker fails, Hey Recon would respawn it on every utterance it hears; this holds off retries for a while.
+const TRANSCRIBER_RETRY_MS = 15_000;
+let transcriberFailure: { until: number; error: Error } | null = null;
 
 function setTranscriberStatus(status: Record<string, unknown>): void {
   transcriberStatus = status;
@@ -281,11 +284,22 @@ function setTranscriberStatus(status: Record<string, unknown>): void {
 /** Starts the speech-to-text worker on first use and resolves once it has a model loaded and is ready for requests. */
 function startTranscriber(): Promise<void> {
   if (transcriberReady) return transcriberReady;
+  if (transcriberFailure && Date.now() < transcriberFailure.until) return Promise.reject(transcriberFailure.error);
+  transcriberFailure = null;
   setTranscriberStatus({ status: "loading" });
   transcriberReady = new Promise((resolve, reject) => {
     const env: Record<string, string> = { ...(process.env as Record<string, string>), ELECTRON_RUN_AS_NODE: "1", ALT_HOME: home(), WHISPER_CACHE: path.join(home(), "models") };
-    const child = spawn(process.execPath, [unpacked("brain", "transcriber.js")], { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    const child = spawn(process.execPath, [unpacked("brain", "transcriber.js")], { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     transcriber = child;
+    // Why the worker failed: the error it reported itself, or else what it printed on stderr before crashing.
+    let reportedError = "";
+    let stderr = "";
+    let ready = false;
+    let ended = false;
+    child.stderr!.on("data", (chunk) => {
+      console.error(`[transcriber] ${String(chunk).trimEnd()}`);
+      stderr = (stderr + chunk).slice(-4000);
+    });
     let buffer = "";
     child.stdout!.on("data", (chunk) => {
       buffer += chunk;
@@ -304,19 +318,38 @@ function startTranscriber(): Promise<void> {
           continue;
         }
         setTranscriberStatus(message);
-        if (message.status === "ready") resolve();
-        if (message.status === "error") reject(new Error(message.message));
+        if (message.status === "ready") {
+          ready = true;
+          resolve();
+        }
+        if (message.status === "error") {
+          reportedError = String(message.message ?? "");
+          reject(new Error(message.message));
+        }
       }
     });
-    child.on("exit", (code) => {
+    // Runs once, whether the worker exited or could not be started at all (then only "error" fires).
+    const end = (code: number | null, startError?: string) => {
+      if (ended) return;
+      ended = true;
       if (transcriber === child) transcriber = null;
       transcriberReady = null;
       for (const resolvePending of transcribePending.values()) resolvePending({ error: "The speech model stopped." });
       transcribePending.clear();
-      if (code) setTranscriberStatus({ status: "error", message: `stopped (exit code ${code})` });
+      const reason = startError || reportedError || stderr.split("\n").map((line) => line.trim()).find(Boolean) || "";
+      const error = new Error(`The speech model could not start${code ? ` (exit code ${code})` : ""}${reason ? `: ${reason}` : "."}`);
+      // Quitting before it was ready is a failure even without an exit code; otherwise the status would
+      // stay "loading" and the next utterance would start it again straight away.
+      if (code || !ready) {
+        transcriberFailure = { until: Date.now() + TRANSCRIBER_RETRY_MS, error };
+        const stopped = code ? `stopped (exit code ${code})` : "stopped before it was ready";
+        setTranscriberStatus({ status: "error", message: reason ? `${stopped}: ${reason}` : stopped });
+      }
       // A worker that quits before it is ready would otherwise leave every recording waiting forever.
-      reject(new Error(`The speech model could not start${code ? ` (exit code ${code})` : ""}.`));
-    });
+      reject(error);
+    };
+    child.on("exit", (code) => end(code));
+    child.on("error", (error) => end(null, error.message));
   });
   transcriberReady.catch(() => {});
   return transcriberReady;
