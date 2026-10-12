@@ -50,45 +50,7 @@ const running = (id: string) => started.has(id) && !exited.has(id);
 // because they stop while the window is hidden or covered and a terminal would then never start.
 const soon = (work: () => void) => setTimeout(work, 30);
 
-/* ---------- Voice input ---------- */
-
-interface MicRecording { recorder: MediaRecorder; chunks: BlobPart[]; stream: MediaStream; startedAt: number; button: HTMLButtonElement }
-const micRecordings = new Map<string, MicRecording>();
-/** A tap shorter than this is almost always an accidental click, not a recording, so it is dropped silently. */
-const MIN_RECORDING_MS = 3000;
-
-async function toggleMic(id: string, button: HTMLButtonElement): Promise<void> {
-  const active = micRecordings.get(id);
-  if (active) return stopMic(id, active);
-  let stream: MediaStream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch {
-    return toast("Could not access the microphone. Check this computer's microphone privacy settings.", true);
-  }
-  const recorder = new MediaRecorder(stream);
-  const chunks: BlobPart[] = [];
-  recorder.ondataavailable = (event) => {
-    if (event.data.size) chunks.push(event.data);
-  };
-  recorder.start();
-  micRecordings.set(id, { recorder, chunks, stream, startedAt: Date.now(), button });
-  button.classList.add("recording");
-  button.title = "Recording… click again to stop; the text goes into the prompt for you to check and send (stopping before 3s cancels)";
-}
-
-function stopMic(id: string, state: MicRecording): void {
-  micRecordings.delete(id);
-  state.button.classList.remove("recording");
-  state.button.title = "Click to record a prompt by voice; click again to stop. The text goes into the prompt for you to check and send. Stopping before 3s cancels the recording.";
-  const elapsed = Date.now() - state.startedAt;
-  state.recorder.onstop = () => {
-    state.stream.getTracks().forEach((track) => track.stop());
-    if (elapsed < MIN_RECORDING_MS) return toast("Recording too short, cancelled.");
-    void transcribeAndInsert(id, new Blob(state.chunks, { type: state.recorder.mimeType }));
-  };
-  state.recorder.stop();
-}
+/* ---------- Speech-to-text ---------- */
 
 /** Decodes a recorded clip to the 16kHz mono samples the local Whisper model expects. */
 async function toPcm16k(blob: Blob): Promise<Float32Array> {
@@ -103,22 +65,6 @@ async function toPcm16k(blob: Blob): Promise<Float32Array> {
   return (await offline.startRendering()).getChannelData(0);
 }
 
-async function transcribeAndInsert(id: string, blob: Blob): Promise<void> {
-  toast("Transcribing…");
-  try {
-    const pcm = await toPcm16k(blob);
-    const answer = await api.invoke("mic:transcribe", Array.from(pcm));
-    if (answer?.error) return toast(answer.error, true);
-    const text = String(answer?.text || "");
-    if (!text) return toast("Didn't catch any words.");
-    // Pasted on one line (not typed + Enter), so it lands in the input for the user to review and send themselves.
-    const pasted = await api.invoke("term:paste", id, text, true);
-    if (pasted?.error) return toast(pasted.error, true);
-    select(id);
-  } catch {
-    toast("Could not transcribe that recording.", true);
-  }
-}
 api.on("mic:status", (status: { status: string; percent?: number; message?: string }) => {
   if (status.status === "downloading") toast(`Downloading the local speech model… ${status.percent ?? 0}%`);
   else if (status.status === "error") toast(`Speech-to-text: ${status.message}`, true);
@@ -425,11 +371,6 @@ function makePanel(profile: Profile): void {
     workspace = answer;
     render();
   };
-  const mic = document.createElement("button");
-  mic.className = "icon mic";
-  mic.title = "Click to record a prompt by voice; click again to stop. The text goes into the prompt for you to check and send. Stopping before 3s cancels the recording.";
-  mic.textContent = "🎤";
-  mic.onclick = () => toggleMic(profile.id, mic);
   // The terminal's job. Claude Code is told about it when the terminal starts.
   const role = document.createElement("select");
   role.className = "small role";
@@ -450,7 +391,7 @@ function makePanel(profile: Profile): void {
   waiting.className = "waiting";
   waiting.hidden = true;
   waiting.onclick = () => api.invoke("term:deliver-now", profile.id);
-  bar.append(dot, name, hint, eye, spacer, waiting, role, mic, restart, remove);
+  bar.append(dot, name, hint, eye, spacer, waiting, role, restart, remove);
   const body = document.createElement("div");
   body.className = "term";
   panel.append(bar, body);
@@ -594,14 +535,6 @@ function render(): void {
     recentText.delete(id);
     limitShownAt.delete(id);
     limitStates.delete(id);
-    // A recording in a removed terminal would otherwise keep the microphone on.
-    const recording = micRecordings.get(id);
-    if (recording) {
-      micRecordings.delete(id);
-      recording.recorder.onstop = null;
-      if (recording.recorder.state !== "inactive") recording.recorder.stop();
-      recording.stream.getTracks().forEach((track) => track.stop());
-    }
   }
   const count = workspace.profiles.length;
   $("panels").style.setProperty("--cols", String(count <= 3 ? count : Math.ceil(count / 2)));
