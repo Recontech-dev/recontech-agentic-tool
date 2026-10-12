@@ -106,5 +106,6 @@ export async function ollamaModels(): Promise<string[] | null> {
   const response = await reachable(`${OLLAMA_URL}/api/tags`, 2000);
   if (!response?.ok) return null;
   const data = (await response.json()) as { models?: { name: string }[] };
-  return (data.models ?? []).map((m) => m.name).sort();
+  // Embedding-only models (e.g. nomic-embed-text) can't run Claude Code's agent loop; keep them out of the picker.
+  return (data.models ?? []).map((m) => m.name).filter((name) => !/embed/i.test(name)).sort();
 }

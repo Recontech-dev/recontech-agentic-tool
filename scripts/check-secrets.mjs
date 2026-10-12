@@ -8,7 +8,7 @@ const TOKEN = new RegExp([
   "gh[pousr]_[A-Za-z0-9]{36,}", "github_pat_[A-Za-z0-9_]{20,}", "AKIA[0-9A-Z]{16}", "xox[baprs]-[A-Za-z0-9-]{10,}",
   "-----BEGIN [A-Z ]*PRIVATE KEY-----",
 ].join("|"), "g");
-const FORBIDDEN_DIRS = new Set([".agentic-lazy-tool", "memory", "sessions", "profiles", ".claude", "agentic-lazy-tool-model"]);
+const FORBIDDEN_DIRS = new Set([".recontech-agentic-tool", ".agentic-lazy-tool", "memory", "sessions", "profiles", ".claude", "recontech-agentic-tool-model", "agentic-lazy-tool-model"]);
 const MAX_BYTES = 10 * 1024 * 1024;
 const FORBIDDEN_NAMES = new Set([".env", "config.json", "workspace.json", "notes.jsonl", ".credentials.json", "CLAUDE.md"]);
 

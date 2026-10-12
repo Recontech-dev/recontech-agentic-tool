@@ -135,7 +135,7 @@ export class FreeProxy {
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    if (!this.allowed(req)) return this.fail(res, 401, "authentication_error", "This address is only for the Agentic Lazy Tool app's own terminals.");
+    if (!this.allowed(req)) return this.fail(res, 401, "authentication_error", "This address is only for the Recontech Agentic Tool app's own terminals.");
     const route = (req.url ?? "").split("?")[0];
     if (req.method !== "POST" || !["/v1/messages", "/v1/messages/count_tokens"].includes(route)) {
       return this.fail(res, 404, "not_found_error", "Not supported by the free-models bridge.");

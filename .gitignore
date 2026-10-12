@@ -2,15 +2,18 @@
 node_modules/
 dist/
 release/
+.build-tmp/
 
 # Personal data: keys, conversations and memory must never be committed.
 .env
 .env.*
 *.key
 *.pem
+.recontech-agentic-tool/
 .agentic-lazy-tool/
 .claude/
 CLAUDE.md
 
 # The Smart sorting model, if the user stores it inside this folder
+recontech-agentic-tool-model/
 agentic-lazy-tool-model/

@@ -57,6 +57,14 @@ export interface Role {
 export const ROLES: Role[] = [
   { id: "", name: "No role", prompt: "" },
   {
+    id: "manager",
+    name: "Manager",
+    prompt:
+      "Your role in this workspace is Manager: you plan and hand out the work; you do not write the code yourself. " +
+      "When the user asks for something, split it into small tasks, use list_terminals to see which terminals are Builder, Reviewer or Tester, and send each task to the right one with message_terminal, naming the files and what done looks like. " +
+      "Keep track of who is doing what, pass a finished change from the Builder to a Reviewer or Tester, send their findings back to the Builder, and tell the user plainly what is done and what is still open.",
+  },
+  {
     id: "builder",
     name: "Builder",
     prompt:
@@ -102,9 +110,43 @@ export function detectKit(folder: string): string {
 }
 
 export const kitById = (id: string | undefined) => KITS.find((k) => k.id === id) ?? KITS[0];
-export const roleById = (id: string | undefined) => ROLES.find((r) => r.id === id) ?? ROLES[0];
+
+/** Roles the user made in the role manager carry ids with this prefix, so they never clash with a built-in one. */
+export const CUSTOM_ROLE_PREFIX = "custom-";
+export const MAX_ROLE_NAME = 30;
+export const MAX_ROLE_PROMPT = 2000;
+export const MAX_CUSTOM_ROLES = 20;
+
+export const isBuiltInRole = (id: string) => ROLES.some((r) => r.id === id);
+
+/**
+ * The built-in roles followed by the user's own. workspace.json can be edited by hand, so custom
+ * entries that are not well-formed, or that try to take a built-in role's id, are left out.
+ */
+export function allRoles(custom?: unknown): Role[] {
+  const own = (Array.isArray(custom) ? custom : []).filter(
+    (r): r is Role => !!r && typeof r.id === "string" && r.id.startsWith(CUSTOM_ROLE_PREFIX) && typeof r.name === "string" && typeof r.prompt === "string",
+  );
+  return [...ROLES, ...own];
+}
+export const roleById = (id: string | undefined, custom?: unknown) => allRoles(custom).find((r) => r.id === id) ?? ROLES[0];
+
+/**
+ * A role's instructions as they can be stored and later passed on a command line: one line, and
+ * without the characters the launch command drops anyway (double quotes, backticks, dollar signs).
+ */
+export function cleanRolePrompt(prompt: string): string {
+  return String(prompt ?? "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    // PowerShell reads curly quotes as real ones, so a pasted "don’t" would end the quoted text early.
+    .replace(/[‘’‚‛“”„‟]/g, "'")
+    .replace(/["`$]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 /** The standing instructions for a terminal, as one line (it is passed on a command line). */
-export function standingPrompt(kitId: string | undefined, roleId: string | undefined): string {
-  return [kitById(kitId).prompt, roleById(roleId).prompt].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+export function standingPrompt(kitId: string | undefined, roleId: string | undefined, custom?: unknown): string {
+  // Cleaned again here, for custom roles written into workspace.json by hand.
+  return cleanRolePrompt([kitById(kitId).prompt, roleById(roleId, custom).prompt].filter(Boolean).join(" "));
 }

@@ -2,7 +2,7 @@
 // This file runs in the page, so it uses only browser APIs and window.api from the preload script.
 
 interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama" | "free"; model?: string; role?: string }
-interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number }
+interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number; filesOpen?: boolean }
 interface GraphNode { id: string; kind: string; label: string; text: string; detail: string; open: boolean;
   color?: string; resume?: { profile: string; id: string; folder: string }; tag?: string; unfinished?: boolean;
   note?: { folder: string; number: number };
@@ -50,7 +50,83 @@ const running = (id: string) => started.has(id) && !exited.has(id);
 // because they stop while the window is hidden or covered and a terminal would then never start.
 const soon = (work: () => void) => setTimeout(work, 30);
 
+/* ---------- Voice input ---------- */
+
+interface MicRecording { recorder: MediaRecorder; chunks: BlobPart[]; stream: MediaStream; startedAt: number; button: HTMLButtonElement }
+const micRecordings = new Map<string, MicRecording>();
+/** A tap shorter than this is almost always an accidental click, not a recording, so it is dropped silently. */
+const MIN_RECORDING_MS = 3000;
+
+async function toggleMic(id: string, button: HTMLButtonElement): Promise<void> {
+  const active = micRecordings.get(id);
+  if (active) return stopMic(id, active);
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    return toast("Could not access the microphone. Check this computer's microphone privacy settings.", true);
+  }
+  const recorder = new MediaRecorder(stream);
+  const chunks: BlobPart[] = [];
+  recorder.ondataavailable = (event) => {
+    if (event.data.size) chunks.push(event.data);
+  };
+  recorder.start();
+  micRecordings.set(id, { recorder, chunks, stream, startedAt: Date.now(), button });
+  button.classList.add("recording");
+  button.title = "Recording… click again to stop; the text goes into the prompt for you to check and send (stopping before 3s cancels)";
+}
+
+function stopMic(id: string, state: MicRecording): void {
+  micRecordings.delete(id);
+  state.button.classList.remove("recording");
+  state.button.title = "Click to record a prompt by voice; click again to stop. The text goes into the prompt for you to check and send. Stopping before 3s cancels the recording.";
+  const elapsed = Date.now() - state.startedAt;
+  state.recorder.onstop = () => {
+    state.stream.getTracks().forEach((track) => track.stop());
+    if (elapsed < MIN_RECORDING_MS) return toast("Recording too short, cancelled.");
+    void transcribeAndInsert(id, new Blob(state.chunks, { type: state.recorder.mimeType }));
+  };
+  state.recorder.stop();
+}
+
+/** Decodes a recorded clip to the 16kHz mono samples the local Whisper model expects. */
+async function toPcm16k(blob: Blob): Promise<Float32Array> {
+  const audioCtx = new AudioContext();
+  const decoded = await audioCtx.decodeAudioData(await blob.arrayBuffer());
+  await audioCtx.close();
+  const offline = new OfflineAudioContext(1, Math.ceil(decoded.duration * 16000), 16000);
+  const source = offline.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offline.destination);
+  source.start();
+  return (await offline.startRendering()).getChannelData(0);
+}
+
+async function transcribeAndInsert(id: string, blob: Blob): Promise<void> {
+  toast("Transcribing…");
+  try {
+    const pcm = await toPcm16k(blob);
+    const answer = await api.invoke("mic:transcribe", Array.from(pcm));
+    if (answer?.error) return toast(answer.error, true);
+    const text = String(answer?.text || "");
+    if (!text) return toast("Didn't catch any words.");
+    // Pasted (not typed + Enter), so it lands in the input for the user to review and send themselves.
+    api.send("term:input", id, `\x1b[200~${text}\x1b[201~`);
+    select(id);
+  } catch {
+    toast("Could not transcribe that recording.", true);
+  }
+}
+api.on("mic:status", (status: { status: string; percent?: number; message?: string }) => {
+  if (status.status === "downloading") toast(`Downloading the local speech model… ${status.percent ?? 0}%`);
+  else if (status.status === "error") toast(`Speech-to-text: ${status.message}`, true);
+});
+
 function makePanel(profile: Profile): void {
+  // `profile` is this call's snapshot; workspace is replaced wholesale after every IPC round trip
+  // (a rename included), so anything shown at click time must look the current one up instead.
+  const now = () => workspace.profiles.find((p) => p.id === profile.id) ?? profile;
   const panel = document.createElement("div");
   panel.className = "panel";
   panel.dataset.id = profile.id;
@@ -62,7 +138,8 @@ function makePanel(profile: Profile): void {
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = profile.name;
-  name.title = profile.name;
+  name.title = `${profile.name} (double-click to rename)`;
+  name.ondblclick = () => startRename(profile.id, name);
   const hint = document.createElement("span");
   hint.className = "hint";
   hint.textContent = profile.kind === "ollama" ? `offline · ${profile.model}` : profile.kind === "free" ? "free AI providers" : profile.configDir ? "own sign-in" : "your normal Claude Code sign-in";
@@ -83,7 +160,7 @@ function makePanel(profile: Profile): void {
   restart.title = "Restart this terminal";
   restart.textContent = "↻";
   restart.onclick = () => {
-    if (running(profile.id) && !confirm(`Restart ${profile.name}'s terminal? What is running there now is closed.`)) return;
+    if (running(profile.id) && !confirm(`Restart ${now().name}'s terminal? What is running there now is closed.`)) return;
     start(profile.id);
   };
   const remove = document.createElement("button");
@@ -91,24 +168,38 @@ function makePanel(profile: Profile): void {
   remove.title = "Remove this profile from the workspace";
   remove.textContent = "✕";
   remove.onclick = async () => {
-    if (!confirm(`Remove ${profile.name}? Its terminal closes. Its sign-in and past sessions stay on disk.`)) return;
+    if (!confirm(`Remove ${now().name}? Its terminal closes. Its sign-in and past sessions stay on disk.`)) return;
     const answer = await api.invoke("profile:remove", profile.id);
     if (answer.error) return toast(answer.error, true);
     workspace = answer;
     render();
   };
+  const mic = document.createElement("button");
+  mic.className = "icon mic";
+  mic.title = "Click to record a prompt by voice; click again to stop. The text goes into the prompt for you to check and send. Stopping before 3s cancels the recording.";
+  mic.textContent = "🎤";
+  mic.onclick = () => toggleMic(profile.id, mic);
   // The terminal's job. Claude Code is told about it when the terminal starts.
   const role = document.createElement("select");
   role.className = "small role";
-  role.title = "This terminal's job. Builder writes, Reviewer reviews, Tester tests; they hand work to each other.";
-  for (const option of roles) role.add(new Option(option.name, option.id));
-  role.value = profile.role ?? "";
+  role.title = "This terminal's job. Manager hands out work, Builder writes, Reviewer reviews, Tester tests; they hand work to each other.";
+  role.dataset.profile = profile.id;
+  fillRoleSelect(role, profile.role ?? "");
   role.hidden = profile.kind === "free";
   role.onchange = async () => {
+    if (role.value === MANAGE_ROLES) {
+      role.value = now().role ?? "";
+      return openRoles(now().role);
+    }
     workspace = await api.invoke("profile:role", profile.id, role.value);
-    if (started.has(profile.id) && confirm(`${profile.name} gets its new role when its terminal restarts. Restart it now? What is running there is closed.`)) start(profile.id);
+    if (started.has(profile.id) && confirm(`${now().name} gets its new role when its terminal restarts. Restart it now? What is running there is closed.`)) start(profile.id);
   };
-  bar.append(dot, name, hint, eye, spacer, role, restart, remove);
+  // Messages from other terminals wait while the user is typing here; this shows them and sends one now.
+  const waiting = document.createElement("button");
+  waiting.className = "waiting";
+  waiting.hidden = true;
+  waiting.onclick = () => api.invoke("term:deliver-now", profile.id);
+  bar.append(dot, name, hint, eye, spacer, waiting, role, mic, restart, remove);
   const body = document.createElement("div");
   body.className = "term";
   panel.append(bar, body);
@@ -119,11 +210,14 @@ function makePanel(profile: Profile): void {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(body);
-  // Ctrl+Alt+1..6, Ctrl+Alt+B and Ctrl+Alt+0 (text size back to normal) belong to the app (switch terminal, show or hide the brain), not to the terminal.
-  term.attachCustomKeyEventHandler((event: KeyboardEvent) => !(event.ctrlKey && event.altKey && /^[0-6b]$/i.test(event.key)));
+  // Ctrl+Alt+1..6, Ctrl+Alt+B, Ctrl+Alt+F and Ctrl+Alt+0 (text size back to normal) belong to the app
+  // (switch terminal, show or hide the brain or the files), not to the terminal.
+  term.attachCustomKeyEventHandler((event: KeyboardEvent) => !(event.ctrlKey && event.altKey && /^[0-6bef]$/i.test(event.key)));
   term.onData((data: string) => api.send("term:input", profile.id, data));
   term.onResize(({ cols, rows }: { cols: number; rows: number }) => api.send("term:resize", profile.id, cols, rows));
-  panel.addEventListener("mousedown", () => select(profile.id));
+  // A click on the bar's own controls (the role list above all) must keep focus there: moving it to
+  // the terminal would close the list the moment it opens.
+  panel.addEventListener("mousedown", (event) => select(profile.id, !(event.target as HTMLElement).closest("select, input, button")));
   terms.set(profile.id, { term, fit, panel });
   if (profile.kind === "free") {
     // The free terminal waits until the user asks for it, typically after a Claude limit is hit.
@@ -139,6 +233,36 @@ function makePanel(profile: Profile): void {
     cover.append(title, text, go);
     body.append(cover);
   }
+}
+
+/** Swaps a terminal's name for an inline input. Enter saves (validated like adding a profile), Esc cancels. */
+function startRename(id: string, nameEl: HTMLSpanElement): void {
+  const before = nameEl.textContent ?? "";
+  const input = document.createElement("input");
+  input.className = "name-edit";
+  input.value = before;
+  input.maxLength = 30;
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+  let settled = false;
+  const finish = async (commit: boolean): Promise<void> => {
+    if (settled) return;
+    settled = true;
+    const value = input.value.trim();
+    input.replaceWith(nameEl);
+    if (!commit || !value || value === before) return;
+    const answer = await api.invoke("profile:rename", id, value);
+    if (answer.error) return toast(answer.error, true);
+    workspace = answer;
+    render();
+    if (running(id)) toast(`Renamed. ${value} keeps signing messages to other terminals as "${before}" until it restarts.`);
+  };
+  input.onkeydown = (event) => {
+    if (event.key === "Enter") finish(true);
+    else if (event.key === "Escape") finish(false);
+  };
+  input.onblur = () => finish(true);
 }
 
 /**
@@ -184,13 +308,13 @@ function fitAll(): void {
   for (const { fit, panel } of terms.values()) if (panel.offsetParent) fit.fit();
 }
 
-function select(id: string): void {
+function select(id: string, focus = true): void {
   active = id;
   for (const [key, { panel }] of terms) panel.classList.toggle("active", key === id);
   for (const tab of $("tabs").children) (tab as HTMLElement).classList.toggle("active", (tab as HTMLElement).dataset.id === id);
   soon(() => {
     fitAll();
-    terms.get(id)?.term.focus();
+    if (focus) terms.get(id)?.term.focus();
   });
 }
 
@@ -207,15 +331,36 @@ function render(): void {
     panel.remove();
     terms.delete(id);
     started.delete(id);
+    exited.delete(id);
+    revealedEmails.delete(id);
+    recentText.delete(id);
+    limitShownAt.delete(id);
+    // A recording in a removed terminal would otherwise keep the microphone on.
+    const recording = micRecordings.get(id);
+    if (recording) {
+      micRecordings.delete(id);
+      recording.recorder.onstop = null;
+      if (recording.recorder.state !== "inactive") recording.recorder.stop();
+      recording.stream.getTracks().forEach((track) => track.stop());
+    }
   }
   const count = workspace.profiles.length;
   $("panels").style.setProperty("--cols", String(count <= 3 ? count : Math.ceil(count / 2)));
   $("work").classList.toggle("tabs", workspace.layout === "tabs");
   $("layout").textContent = workspace.layout === "tabs" ? "Grid" : "Tabs";
-  $("folder").textContent = workspace.folder || "Choose project folder";
+  $("folder").textContent = workspace.folder ? workspace.folder.split(/[\\/]/).pop()! : "Choose project folder";
+  $("folder").title = workspace.folder || "Folder every terminal starts in";
   $("tabs").textContent = "";
   for (const profile of workspace.profiles) {
     if (!terms.has(profile.id)) makePanel(profile);
+    else {
+      // makePanel only runs for a new panel, so a rename has to be applied to the existing one by hand.
+      const nameEl = terms.get(profile.id)!.panel.querySelector(".name") as HTMLElement;
+      if (nameEl.textContent !== profile.name) {
+        nameEl.textContent = profile.name;
+        nameEl.title = `${profile.name} (double-click to rename)`;
+      }
+    }
     const tab = document.createElement("button");
     tab.dataset.id = profile.id;
     tab.textContent = profile.name;
@@ -251,6 +396,7 @@ function render(): void {
   });
   showNetwork();
   refreshAccounts();
+  if (!$("files").hidden && treeRoot !== workspace.folder) loadTree();
 }
 
 /** Offer signed-in Claude Code folders that are on this computer but not in the workspace yet. */
@@ -285,6 +431,15 @@ api.on("term:message", (id: string) => {
   if (!panel) return;
   panel.classList.add("messaged");
   setTimeout(() => panel.classList.remove("messaged"), 2500);
+});
+
+// A message for this terminal is waiting because the user is typing in it.
+api.on("term:waiting", (id: string, count: number) => {
+  const button = terms.get(id)?.panel.querySelector(".waiting") as HTMLButtonElement | null;
+  if (!button) return;
+  button.hidden = !count;
+  button.textContent = `✉ ${count}`;
+  button.title = `${count === 1 ? "A message" : `${count} messages`} from another terminal ${count === 1 ? "waits" : "wait"} until you send or clear what you are typing here. Click to send ${count === 1 ? "it" : "the first one"} now.`;
 });
 
 /* ---------- Limit reached: offer the free terminal ---------- */
@@ -428,7 +583,11 @@ $("freeForm").onsubmit = async (event) => {
   event.preventDefault();
   const before = freeContained;
   const saved = await api.invoke("free:save", freeEntries(), ($("contained") as HTMLInputElement).checked);
-  if (saved.error) return void ($("freeError").textContent = saved.error);
+  if (saved.error) {
+    $("freeError").textContent = saved.error;
+    $("freeError").scrollIntoView({ block: "nearest" });
+    return;
+  }
   workspace = saved;
   freeContained = ($("contained") as HTMLInputElement).checked;
   $("freeDialog").hidden = true;
@@ -487,12 +646,16 @@ $("folder").onclick = async () => {
   // Picked first, so a user who cancels the native picker is never asked to confirm a restart first.
   const folder: string | null = await api.invoke("workspace:pick-folder");
   if (!folder || folder === before) return;
+  // Open files belong to the old folder and close with it.
+  const unsaved = openFiles.filter(isDirty).length;
+  if (unsaved && !confirm(`${unsaved} open file${unsaved === 1 ? " has" : "s have"} unsaved changes that will be lost. Change the project folder anyway?`)) return;
   if (started.size && !confirm("Changing the project folder restarts every terminal in the new folder. Running Claude Code sessions are closed; you can resume them later from the brain. Continue?")) return;
   // The free terminal is never auto-started by render() below, so if it was already running it
   // must be restarted by hand too, or it would keep working in the folder it had before.
   const free = workspace.profiles.find((p) => p.kind === "free");
   const freeWasRunning = !!free && started.has(free.id);
   workspace = await api.invoke("workspace:set-folder", folder);
+  closeAllFiles();
   started.clear();
   await showKit();
   render();
@@ -580,6 +743,8 @@ function showFontSize(): void {
 function setFontSize(size: number): void {
   workspace.fontSize = Math.max(9, Math.min(24, size));
   for (const { term } of terms.values()) term.options.fontSize = workspace.fontSize;
+  editor?.updateOptions({ fontSize: workspace.fontSize });
+  diffEditor?.updateOptions({ fontSize: workspace.fontSize });
   soon(fitAll);
   showFontSize();
   toast(`Terminal text size: ${workspace.fontSize}px`);
@@ -620,6 +785,12 @@ window.addEventListener("keydown", (event) => {
   } else if (event.key.toLowerCase() === "b") {
     $("toggle").click();
     event.preventDefault();
+  } else if (event.key.toLowerCase() === "e") {
+    if (openFiles.length) showEditor($("editor").hidden);
+    event.preventDefault();
+  } else if (event.key.toLowerCase() === "f") {
+    showFiles($("files").hidden);
+    event.preventDefault();
   } else if (event.key === "0") {
     setFontSize(DEFAULT_FONT_SIZE);
     event.preventDefault();
@@ -628,7 +799,7 @@ window.addEventListener("keydown", (event) => {
 
 /* ---------- Dialogs: Esc or a click outside closes them ---------- */
 
-const DIALOGS = ["dialog", "freeDialog", "shareDialog"];
+const DIALOGS = ["dialog", "freeDialog", "shareDialog", "roleDialog"];
 for (const id of DIALOGS) {
   $(id).addEventListener("mousedown", (event) => {
     if (event.target === $(id)) $(id).hidden = true;
@@ -642,6 +813,117 @@ window.addEventListener("keydown", (event) => {
   event.preventDefault();
   terms.get(active)?.term.focus();
 }, true);
+
+/* ---------- Terminal roles ---------- */
+
+/** The last entry of every terminal's role list opens the role manager instead of picking a role. */
+const MANAGE_ROLES = "__manage";
+
+function fillRoleSelect(select: HTMLSelectElement, value: string): void {
+  select.length = 0;
+  for (const option of roles) select.add(new Option(option.name, option.id));
+  select.add(new Option("Manage roles…", MANAGE_ROLES));
+  // A role that was deleted meanwhile shows as no role, as it is for Claude Code.
+  select.value = roles.some((r) => r.id === value) ? value : "";
+}
+
+/** After roles were added, renamed or removed: every terminal's list shows the new set. */
+async function refreshRoles(): Promise<void> {
+  await showKit();
+  for (const select of document.querySelectorAll<HTMLSelectElement>(".bar select.role")) {
+    fillRoleSelect(select, workspace.profiles.find((p) => p.id === select.dataset.profile)?.role ?? "");
+  }
+}
+
+interface RoleEntry { id: string; name: string; prompt: string; builtIn: boolean; usedBy: string[] }
+let roleEntries: RoleEntry[] = [];
+/** The role shown in the form; "" while a new role is being written. */
+let roleShown = "";
+
+function showRole(id: string): void {
+  const entry = roleEntries.find((r) => r.id === id);
+  roleShown = entry?.id ?? "";
+  for (const button of $("roleList").querySelectorAll<HTMLButtonElement>("button")) button.classList.toggle("on", button.dataset.id === roleShown);
+  const name = $("roleName") as HTMLInputElement;
+  const prompt = $("rolePrompt") as HTMLTextAreaElement;
+  name.value = entry?.name ?? "";
+  prompt.value = entry?.prompt ?? "";
+  name.readOnly = prompt.readOnly = !!entry?.builtIn;
+  $("roleInfo").textContent = !entry
+    ? "A new role. Give it a name and write its instructions, then save."
+    : `${entry.builtIn ? "Built in, so it cannot be changed; copy it to make your own version. " : ""}${
+        entry.usedBy.length ? `Used by: ${entry.usedBy.join(", ")}.` : "No terminal has this role."}`;
+  $("roleError").textContent = "";
+  $("roleSave").hidden = !!entry?.builtIn;
+  $("roleDelete").hidden = !entry || entry.builtIn;
+  $("roleCopy").hidden = !entry;
+  if (!entry) name.focus();
+}
+
+async function loadRoles(selected?: string): Promise<void> {
+  roleEntries = await api.invoke("role:list");
+  const list = $("roleList");
+  list.textContent = "";
+  for (const entry of roleEntries) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.id = entry.id;
+    const title = document.createElement("span");
+    title.textContent = entry.name;
+    const sub = document.createElement("span");
+    sub.className = "dim";
+    sub.textContent = [entry.builtIn ? "built in" : "yours", entry.usedBy.length ? `${entry.usedBy.length} terminal${entry.usedBy.length === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+    button.append(title, sub);
+    button.onclick = () => showRole(entry.id);
+    list.append(button);
+  }
+  showRole(roleEntries.some((r) => r.id === selected) ? selected! : selected === "" ? "" : roleEntries[0]?.id ?? "");
+}
+
+async function openRoles(selected?: string): Promise<void> {
+  await loadRoles(selected || undefined);
+  $("roleDialog").hidden = false;
+}
+
+/** Terminals already running with a role that just changed get it only on a restart; say so. */
+function roleChangedNotice(id: string): void {
+  const running = workspace.profiles.filter((p) => p.role === id && started.has(p.id)).map((p) => p.name);
+  if (running.length) toast(`${running.join(", ")} ${running.length === 1 ? "gets" : "get"} the changed role when restarted (↻).`);
+}
+
+$("roles").onclick = () => openRoles();
+$("roleClose").onclick = () => ($("roleDialog").hidden = true);
+$("roleNew").onclick = () => showRole("");
+$("roleCopy").onclick = () => {
+  const entry = roleEntries.find((r) => r.id === roleShown);
+  showRole("");
+  if (!entry) return;
+  ($("roleName") as HTMLInputElement).value = `${entry.name} copy`.slice(0, 30);
+  ($("rolePrompt") as HTMLTextAreaElement).value = entry.prompt;
+};
+$("roleForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const answer = await api.invoke("role:save", {
+    id: roleShown || undefined, name: ($("roleName") as HTMLInputElement).value, prompt: ($("rolePrompt") as HTMLTextAreaElement).value,
+  });
+  if (answer.error) return ($("roleError").textContent = answer.error);
+  workspace = answer.workspace;
+  await refreshRoles();
+  await loadRoles(answer.role.id);
+  roleChangedNotice(answer.role.id);
+  toast(`Saved the role ${answer.role.name}.`);
+});
+$("roleDelete").onclick = async () => {
+  const entry = roleEntries.find((r) => r.id === roleShown);
+  if (!entry || entry.builtIn) return;
+  const users = entry.usedBy.length ? ` ${entry.usedBy.join(", ")} will have no role (from the next restart).` : "";
+  if (!confirm(`Delete the role ${entry.name}?${users}`)) return;
+  const answer = await api.invoke("role:remove", entry.id);
+  if (answer.error) return ($("roleError").textContent = answer.error);
+  workspace = answer;
+  await refreshRoles();
+  await loadRoles();
+};
 
 /* ---------- Project kit ---------- */
 
@@ -891,10 +1173,33 @@ function labelWidth(n: GraphNode): number {
   return labelWidths.get(key)!;
 }
 
-/** The space a node and its label take up, in world units: [left, top, right, bottom]. */
+/** How big a circle is drawn on screen: it shrinks with the camera, but not so far that it becomes a speck. */
+const drawnRadius = (n: GraphNode) => Math.max(radius(n) * Math.min(camera.scale, 1.2), radius(n) * 0.6, 2);
+
+/** Room on screen for the "open now" or "unfinished" ring around a circle, so its label starts past it. */
+const ringGap = (n: GraphNode) => ((n.kind === "project" && n.open) || n.unfinished ? 6 : 0);
+
+/**
+ * The space a node and its label take up, in world units: [left, top, right, bottom]. It is worked
+ * out from what is drawn on screen and then turned into world units, so it stays right when circles
+ * and project names stop shrinking at a minimum size. A label that is too small to be drawn gets no room.
+ */
 function box(n: GraphNode): [number, number, number, number] {
-  const r = radius(n), half = Math.max(r, 8);
-  return [n.x - r - 3, n.y - half - 3, n.x + r + 6 + labelWidth(n) + 3, n.y + half + 3];
+  const s = camera.scale, k = Math.min(s, 1.2);
+  const r = drawnRadius(n) + ringGap(n), half = Math.max(r, 8 * k);
+  const size = fontSize(n) * k, drawn = n.kind === "project" ? Math.max(size, 10) : size;
+  const label = n.kind === "project" || size >= 7 ? 4 * k + labelWidth(n) * (drawn / fontSize(n)) + 3 : 0;
+  return [n.x - (r + 3) / s, n.y - (half + 3) / s, n.x + (r + 3 + label) / s, n.y + (half + 3) / s];
+}
+
+/** The space the whole picture takes up, in world units: [left, top, right, bottom]. */
+function extent(): [number, number, number, number] {
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  for (const n of nodes) {
+    const [l, t, r, b] = box(n);
+    left = Math.min(left, l); top = Math.min(top, t); right = Math.max(right, r); bottom = Math.max(bottom, b);
+  }
+  return [left, top, right, bottom];
 }
 
 const toScreen = (x: number, y: number) => [(x - camera.x) * camera.scale + width / 2, (y - camera.y) * camera.scale + height / 2];
@@ -955,9 +1260,13 @@ function step(): void {
     const rest = a.kind === "project" || b.kind === "project" ? 90 : 140, pull = (d - rest) * 0.02;
     a.vx += (dx / d) * pull; a.vy += (dy / d) * pull; b.vx -= (dx / d) * pull; b.vy -= (dy / d) * pull;
   }
+  // The pull to the middle is stronger along the picture's longer side, compared with the canvas,
+  // so the network takes the canvas's shape and fills it instead of a narrow band across it.
+  const [left, top, right, bottom] = nodes.length ? extent() : [0, 0, 1, 1];
+  const stretch = width && height ? Math.max(0.25, Math.min(8, ((right - left) / (bottom - top) / (width / height)) ** 2)) : 1;
   for (const n of nodes) {
-    n.vx -= n.x * 0.002;
-    n.vy -= n.y * 0.002;
+    n.vx -= n.x * 0.004 * stretch;
+    n.vy -= n.y * 0.004 / stretch;
     if (n !== dragged) { n.x += n.vx * heat; n.y += n.vy * heat; }
     n.vx *= 0.8; n.vy *= 0.8;
   }
@@ -998,11 +1307,7 @@ function separate(): void {
 /** Move the camera a little towards the view that shows every node and label. */
 function fitCamera(): void {
   if (camera.manual || !nodes.length || !width || !height) return;
-  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-  for (const n of nodes) {
-    const [l, t, r, b] = box(n);
-    left = Math.min(left, l); top = Math.min(top, t); right = Math.max(right, r); bottom = Math.max(bottom, b);
-  }
+  const [left, top, right, bottom] = extent();
   const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, (width - 2 * MARGIN) / (right - left), (height - 2 * MARGIN) / (bottom - top)));
   camera.x += ((left + right) / 2 - camera.x) * 0.2;
   camera.y += ((top + bottom) / 2 - camera.y) * 0.2;
@@ -1025,7 +1330,7 @@ function draw(): void {
     ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
   }
   for (const n of nodes) {
-    const [x, y] = toScreen(n.x, n.y), r = Math.max(radius(n) * k, 2);
+    const [x, y] = toScreen(n.x, n.y), r = drawnRadius(n);
     ctx.globalAlpha = lit(n) ? 1 : 0.15;
     ctx.fillStyle = colour(n);
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
@@ -1044,8 +1349,9 @@ function draw(): void {
     const important = n.kind === "project" || n === focus || (focus && lit(n));
     if (textSize >= 7 || important) {
       ctx.fillStyle = n.kind === "project" || n.kind === "topic" || n.open ? css("--text") : css("--dim");
-      ctx.font = font(n, Math.max(textSize, important ? 10 : 0));
-      ctx.fillText(n.label, x + r + 4 * k, y + textSize / 3);
+      const size = Math.max(textSize, important ? 10 : 0);
+      ctx.font = font(n, size);
+      ctx.fillText(n.label, x + r + ringGap(n) + 4 * k, y + size / 3);
     }
   }
   ctx.globalAlpha = 1;
@@ -1087,18 +1393,29 @@ function show(n: GraphNode | null): void {
     button.id = "resume";
     button.textContent = `Resume in ${ref.profile}`;
     button.onclick = () => resumeSession(ref);
-    detail.append(button);
+    // Takes the session out of the brain only; Claude Code keeps its transcript.
+    const remove = document.createElement("button");
+    remove.id = "removeSession";
+    remove.textContent = "Remove from brain";
+    remove.title = "Take this session out of the brain's picture and search. Claude Code's own transcript stays on disk; the session comes back if it is continued.";
+    remove.onclick = async () => {
+      if (!confirm(`Remove "${n.label}" from the brain? Claude Code's transcript is kept.`)) return;
+      const answer = await api.invoke("session:remove", { profile: ref.profile, id: ref.id });
+      if (answer.error) return toast(answer.error, true);
+      selected = null;
+      show(null);
+    };
+    detail.append(button, remove);
   }
 }
 
 function pointer(event: PointerEvent | WheelEvent | MouseEvent) {
   const rect = canvas.getBoundingClientRect(), sx = event.clientX - rect.left, sy = event.clientY - rect.top;
-  const k = Math.min(camera.scale, 1.2);
   let best: GraphNode | null = null, bestDistance = Infinity;
   for (const n of nodes) {
     const [x, y] = toScreen(n.x, n.y);
     const distance = Math.hypot(x - sx, y - sy);
-    if (distance < Math.max(radius(n) * k, 2) + 6 && distance < bestDistance) { best = n; bestDistance = distance; }
+    if (distance < drawnRadius(n) + 6 && distance < bestDistance) { best = n; bestDistance = distance; }
   }
   return { node: best, sx, sy };
 }
@@ -1163,6 +1480,409 @@ api.on("brain:graph", (data) => {
 // The canvas changes size with the window, the panels and the status line above it; keep the drawing in step.
 new ResizeObserver(() => resizeMap()).observe(canvas);
 
+/* ---------- Files: the project folder ---------- */
+
+interface FileEntry { name: string; path: string; dir: boolean }
+/** The project folder the tree shows, and the folders open in it, so a refresh keeps them open. */
+let treeRoot = "";
+const expanded = new Set<string>();
+
+function showFiles(open: boolean): void {
+  $("files").hidden = !open;
+  $("filesToggle").classList.toggle("on", open);
+  if (open && treeRoot !== workspace.folder) loadTree();
+  soon(fitAll);
+  api.invoke("ui:save", { filesOpen: open });
+}
+
+async function loadTree(): Promise<void> {
+  if (treeRoot !== workspace.folder) expanded.clear();
+  treeRoot = workspace.folder;
+  const name = workspace.folder.split(/[\\/]/).filter(Boolean).pop() ?? "";
+  $("filesTitle").textContent = name || "No project folder";
+  $("filesTitle").title = workspace.folder;
+  const tree = $("tree");
+  tree.textContent = "";
+  if (!workspace.folder) return void tree.append(noteRow("Choose a project folder to see its files.", 0));
+  await fillFolder(tree, "", 0);
+}
+
+function noteRow(text: string, depth: number): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "node note-row";
+  row.style.setProperty("--depth", String(depth));
+  row.textContent = text;
+  return row;
+}
+
+/** List one folder into `box`, opening again whichever of its subfolders were open. */
+async function fillFolder(box: HTMLElement, relative: string, depth: number): Promise<void> {
+  const answer: { entries?: FileEntry[]; more?: boolean; error?: string } = await api.invoke("files:list", relative);
+  box.textContent = "";
+  if (answer.error) return void box.append(noteRow(answer.error, depth));
+  if (!answer.entries!.length) box.append(noteRow("Empty", depth));
+  for (const entry of answer.entries!) box.append(fileNode(entry, depth));
+  if (answer.more) box.append(noteRow("Only the first 2,000 items are shown.", depth));
+}
+
+function fileNode(entry: FileEntry, depth: number): HTMLElement {
+  const wrap = document.createElement("div");
+  const row = document.createElement("div");
+  row.className = `node ${entry.dir ? "dir" : "file"}`;
+  row.style.setProperty("--depth", String(depth));
+  row.tabIndex = 0;
+  row.setAttribute("role", "treeitem");
+  row.title = entry.path;
+  const twisty = document.createElement("span");
+  twisty.className = "twisty";
+  twisty.textContent = entry.dir ? "▸" : "";
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = (entry.dir ? "📁 " : "") + entry.name;
+  const insert = document.createElement("button");
+  insert.className = "icon act";
+  insert.textContent = "➕";
+  insert.title = "Put this path into the terminal you are using, for Claude Code to look at";
+  insert.onclick = (event) => {
+    event.stopPropagation();
+    insertPath(entry.path);
+  };
+  const reveal = document.createElement("button");
+  reveal.className = "icon act";
+  reveal.textContent = "📂";
+  reveal.title = "Show it in Explorer";
+  reveal.onclick = async (event) => {
+    event.stopPropagation();
+    const answer = await api.invoke("files:reveal", entry.path);
+    if (answer.error) toast(answer.error, true);
+  };
+  row.append(twisty, label, insert, reveal);
+  wrap.append(row);
+  const children = document.createElement("div");
+  children.setAttribute("role", "group");
+  if (entry.dir) {
+    const toggle = async () => {
+      const open = !expanded.has(entry.path);
+      if (open) expanded.add(entry.path);
+      else expanded.delete(entry.path);
+      row.setAttribute("aria-expanded", String(open));
+      twisty.textContent = open ? "▾" : "▸";
+      children.textContent = "";
+      if (open) await fillFolder(children, entry.path, depth + 1);
+    };
+    row.setAttribute("aria-expanded", "false");
+    row.onclick = toggle;
+    if (expanded.has(entry.path)) {
+      expanded.delete(entry.path);
+      toggle();
+    }
+  } else {
+    row.onclick = async () => {
+      // Text files (scripts and code included) open in the editor; anything else in its own app.
+      if (await openInEditor(entry.path)) return;
+      const answer = await api.invoke("files:open", entry.path);
+      if (answer.error) toast(answer.error, true);
+      else if (answer.revealed) toast(`${entry.name} is a program or script, so it is shown in Explorer instead of being run.`);
+    };
+  }
+  row.onkeydown = (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      row.click();
+      event.preventDefault();
+    }
+  };
+  wrap.append(children);
+  return wrap;
+}
+
+/** Paste a project file's path into the active terminal, as Claude Code's @ reference, for the user to finish the prompt. */
+function insertPath(relative: string): void {
+  if (!active || !running(active)) return toast("Start a terminal first, then put the path into it.", true);
+  const ref = /\s/.test(relative) ? `@"${relative}" ` : `@${relative} `;
+  api.send("term:input", active, `\x1b[200~${ref}\x1b[201~`);
+  select(active);
+}
+
+$("filesToggle").onclick = () => showFiles($("files").hidden);
+$("filesClose").onclick = () => showFiles(false);
+$("filesRefresh").onclick = () => {
+  treeRoot = workspace.folder;
+  const tree = $("tree");
+  fillFolder(tree, "", 0);
+};
+$("filesReveal").onclick = async () => {
+  const answer = await api.invoke("files:reveal", "");
+  if (answer.error) toast(answer.error, true);
+};
+
+/* ---------- Editor: minor edits and code reviews, in Monaco (VS Code's editor) ---------- */
+
+interface OpenFile { path: string; model: any; mtime: number; bom: boolean; saved: number; view?: any; original?: any; gone?: boolean }
+const MONACO = "../node_modules/monaco-editor/min/vs";
+let monaco: any = null;
+let monacoLoading: Promise<any> | null = null;
+let editor: any = null;
+let diffEditor: any = null;
+const openFiles: OpenFile[] = [];
+let current: OpenFile | null = null;
+let diffing = false;
+const codeHost = document.createElement("div");
+const diffHost = document.createElement("div");
+codeHost.style.height = diffHost.style.height = "100%";
+diffHost.hidden = true;
+$("editorHost").append(codeHost, diffHost);
+
+const isDirty = (file: OpenFile) => file.model.getAlternativeVersionId() !== file.saved;
+
+/**
+ * Monaco is loaded the first time a file is opened, not at start. Its loader defines a global
+ * `define`, which must not exist while the terminal scripts load, or they would stop being globals.
+ */
+function loadMonaco(): Promise<any> {
+  if (monacoLoading) return monacoLoading;
+  monacoLoading = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = `${MONACO}/loader.js`;
+    script.onload = () => {
+      const amd = (window as any).require;
+      amd.config({ paths: { vs: MONACO } });
+      amd(["vs/editor/editor.main"], () => resolve((window as any).monaco), () => reject(new Error("The editor could not be loaded.")));
+    };
+    script.onerror = () => reject(new Error("The editor could not be loaded."));
+    document.head.append(script);
+  });
+  monacoLoading.catch(() => (monacoLoading = null));
+  return monacoLoading;
+}
+
+async function ensureEditor(): Promise<void> {
+  if (editor) return;
+  monaco = await loadMonaco();
+  const options = {
+    theme: "vs-dark", automaticLayout: true, fontSize: workspace.fontSize ?? DEFAULT_FONT_SIZE,
+    fontFamily: "Consolas, 'Cascadia Mono', Menlo, monospace", minimap: { enabled: false }, scrollBeyondLastLine: false,
+  };
+  editor = monaco.editor.create(codeHost, options);
+  // Side by side reads best for a review; only a really narrow pane falls back to one column.
+  diffEditor = monaco.editor.createDiffEditor(diffHost, { ...options, originalEditable: false, renderSideBySide: true, renderSideBySideInlineBreakpoint: 520 });
+  const save = monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS;
+  editor.addCommand(save, () => saveFile());
+  diffEditor.getModifiedEditor().addCommand(save, () => saveFile());
+  editor.onDidChangeModelContent(showEditorState);
+  diffEditor.getModifiedEditor().onDidChangeModelContent(showEditorState);
+}
+
+/** Open a project file in the editor. False when it is not text (or too large) and should open elsewhere. */
+async function openInEditor(relative: string): Promise<boolean> {
+  let file = openFiles.find((f) => f.path === relative);
+  if (!file) {
+    const answer: { text?: string; mtime?: number; bom?: boolean; error?: string; code?: string } = await api.invoke("files:read", relative);
+    if (answer.error) {
+      if (answer.code) return false;
+      toast(answer.error, true);
+      return true;
+    }
+    try {
+      await ensureEditor();
+    } catch (error) {
+      toast((error as Error).message, true);
+      return false;
+    }
+    // The file name in the address tells Monaco which language to colour it as.
+    const model = monaco.editor.createModel(answer.text, undefined, monaco.Uri.file("/" + relative));
+    file = { path: relative, model, mtime: answer.mtime!, bom: !!answer.bom, saved: model.getAlternativeVersionId() };
+    openFiles.push(file);
+  }
+  showEditor(true);
+  await activate(file);
+  return true;
+}
+
+function showEditor(open: boolean): void {
+  $("work").classList.toggle("editing", open);
+  $("editor").hidden = !open;
+  $("editorShow").hidden = open || !openFiles.length;
+  $("editorShow").textContent = `Editor (${openFiles.length})`;
+  if (open) (diffing ? diffEditor?.getModifiedEditor() : editor)?.focus();
+  else soon(() => {
+    fitAll();
+    terms.get(active)?.term.focus();
+  });
+}
+
+async function activate(file: OpenFile): Promise<void> {
+  if (current && current !== file && !diffing) current.view = editor.saveViewState();
+  current = file;
+  if (diffing) await showDiff(true);
+  else {
+    editor.setModel(file.model);
+    if (file.view) editor.restoreViewState(file.view);
+    editor.focus();
+  }
+  renderEditorTabs();
+  showEditorState();
+}
+
+function renderEditorTabs(): void {
+  const tabs = $("editorTabs");
+  tabs.textContent = "";
+  for (const file of openFiles) {
+    const tab = document.createElement("div");
+    tab.className = "tab" + (file === current ? " active" : "");
+    tab.setAttribute("role", "tab");
+    tab.title = file.path;
+    const name = document.createElement("span");
+    name.textContent = file.path.split("/").pop()!;
+    const dirty = document.createElement("span");
+    dirty.className = "dirty";
+    dirty.textContent = isDirty(file) ? "●" : "";
+    const close = document.createElement("button");
+    close.textContent = "✕";
+    close.title = "Close this file";
+    close.onclick = (event) => {
+      event.stopPropagation();
+      closeFile(file);
+    };
+    tab.onclick = () => activate(file);
+    tab.append(name, dirty, close);
+    tabs.append(tab);
+  }
+}
+
+/** The text next to the buttons says what needs attention: unsaved edits, or a file deleted elsewhere. */
+function showEditorState(): void {
+  if (!current) return;
+  const dirty = isDirty(current);
+  $("editorState").textContent = current.gone ? "Deleted on disk" : dirty ? "Unsaved" : "";
+  ($("editorSave") as HTMLButtonElement).disabled = !dirty && !current.gone;
+  for (const tab of $("editorTabs").children) {
+    const file = openFiles.find((f) => f.path === (tab as HTMLElement).title);
+    const dot = tab.querySelector(".dirty");
+    if (file && dot) dot.textContent = isDirty(file) ? "●" : "";
+  }
+}
+
+async function saveFile(force = false): Promise<void> {
+  const file = current;
+  if (!file) return;
+  const version = file.model.getAlternativeVersionId();
+  const answer = await api.invoke("files:write", { path: file.path, text: file.model.getValue(), mtime: file.mtime, bom: file.bom, force: force || file.gone });
+  if (answer.error) return toast(answer.error, true);
+  if (answer.conflict) {
+    // Claude Code may have edited the same file meanwhile; never overwrite that without asking.
+    if (confirm(`${file.path} was changed outside the editor (perhaps by Claude Code) since you opened it.\n\nOverwrite it with your version? Cancel keeps the file on disk as it is, and your edits stay here.`)) return saveFile(true);
+    return;
+  }
+  file.mtime = answer.mtime;
+  file.saved = version;
+  file.gone = false;
+  showEditorState();
+  toast(`Saved ${file.path}`);
+}
+
+function closeFile(file: OpenFile): void {
+  if (isDirty(file) && !confirm(`${file.path} has unsaved changes. Close it without saving?`)) return;
+  const index = openFiles.indexOf(file);
+  openFiles.splice(index, 1);
+  if (current === file) {
+    current = null;
+    const next = openFiles[Math.min(index, openFiles.length - 1)];
+    if (next) activate(next);
+    else {
+      editor.setModel(null);
+      diffEditor.setModel(null);
+      showEditor(false);
+    }
+  }
+  file.model.dispose();
+  file.original?.dispose();
+  renderEditorTabs();
+  $("editorShow").textContent = `Editor (${openFiles.length})`;
+}
+
+/** Close every open file at once, unsaved edits included (the caller has already asked the user). */
+function closeAllFiles(): void {
+  for (const file of openFiles) file.saved = file.model.getAlternativeVersionId();
+  for (const file of [...openFiles]) closeFile(file);
+}
+
+/** Side by side: the file as in the last commit on the left, as it is now on the right (still editable). */
+async function showDiff(on: boolean): Promise<void> {
+  diffing = on;
+  $("editorDiff").classList.toggle("on", on);
+  if (!current) return;
+  const file = current;
+  if (on) {
+    const answer: { text?: string | null; error?: string } = await api.invoke("files:committed", file.path);
+    if (answer.error) {
+      toast(answer.error, true);
+      return showDiff(false);
+    }
+    if (answer.text === null) toast(`${file.path} is not in the last commit (a new file, or no git here), so all of it shows as added.`);
+    // The old copy is still shown by the diff view, so it goes only once the new one has replaced it.
+    const old = file.original;
+    file.original = monaco.editor.createModel(answer.text ?? "", file.model.getLanguageId());
+    if (current !== file || !diffing) return void old?.dispose();
+    codeHost.hidden = true;
+    diffHost.hidden = false;
+    diffEditor.setModel({ original: file.original, modified: file.model });
+    old?.dispose();
+    diffEditor.getModifiedEditor().focus();
+  } else {
+    diffHost.hidden = true;
+    codeHost.hidden = false;
+    editor.setModel(file.model);
+    editor.focus();
+  }
+}
+
+/**
+ * Claude Code edits files too. An open file that changed on disk is reloaded when it has no unsaved
+ * edits here; with unsaved edits it is left alone, and saving asks before overwriting.
+ */
+async function checkOpenFiles(): Promise<void> {
+  for (const file of [...openFiles]) {
+    const mtime: number = await api.invoke("files:changed-at", file.path);
+    if (!openFiles.includes(file)) continue;
+    file.gone = !mtime;
+    if (!mtime || mtime === file.mtime || isDirty(file)) continue;
+    const answer = await api.invoke("files:read", file.path);
+    if (answer.error || isDirty(file) || !openFiles.includes(file)) continue;
+    // As an edit rather than a replacement, so Undo can still go back to the earlier text.
+    file.model.pushEditOperations([], [{ range: file.model.getFullModelRange(), text: answer.text }], () => null);
+    file.mtime = answer.mtime;
+    file.bom = answer.bom;
+    file.saved = file.model.getAlternativeVersionId();
+    if (file === current) toast(`${file.path} changed on disk and was reloaded.`);
+  }
+  showEditorState();
+}
+let checking = false;
+setInterval(async () => {
+  if (!openFiles.length || checking) return;
+  checking = true;
+  try {
+    await checkOpenFiles();
+  } finally {
+    checking = false;
+  }
+}, 2000);
+
+$("editorSave").onclick = () => saveFile();
+$("editorDiff").onclick = () => showDiff(!diffing);
+$("editorHide").onclick = () => showEditor(false);
+$("editorShow").onclick = () => showEditor(true);
+$("editorVscode").onclick = async () => {
+  if (!current) return;
+  const answer = await api.invoke("files:vscode", current.path);
+  if (answer.error) toast(answer.error, true);
+  else toast("Opening it in VS Code. If nothing happens, VS Code is not installed.");
+};
+// Closing the window with unsaved edits asks first (the question itself comes from the main process).
+window.addEventListener("beforeunload", (event) => {
+  if (openFiles.some(isDirty)) event.returnValue = false;
+});
+
 /* ---------- Start ---------- */
 
 (async () => {
@@ -1172,6 +1892,10 @@ new ResizeObserver(() => resizeMap()).observe(canvas);
   await showKit();
   if (workspace.brainWidth) setBrainWidth(workspace.brainWidth);
   showFontSize();
+  if (workspace.filesOpen) {
+    $("files").hidden = false;
+    $("filesToggle").classList.add("on");
+  }
   render();
   offerSharedNotes();
   showUnfinished();

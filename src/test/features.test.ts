@@ -11,6 +11,7 @@ import { claudeCommand } from "../brain/launch";
 import * as meaning from "../brain/meaning";
 import { SHARE_FILE, exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
 import * as sorting from "../brain/sorting";
+import { cleanupTranscript } from "../brain/speech";
 import { addNote, notes } from "../brain/store";
 import { newer } from "../brain/version";
 import * as ws from "../brain/workspace";
@@ -84,6 +85,29 @@ test("the project kit is detected from the files, and kit and role become one li
   assert.match(claudeCommand(profile, "c.json", undefined, false, "Line one.\nLine two."), /^claude --append-system-prompt 'Line one. Line two.' --mcp-config 'c.json'$/);
 });
 
+test("the role manager adds, changes and removes roles of the user's own", () => {
+  const workspace = ws.load();
+  assert.throws(() => ws.saveRole(workspace, { id: "builder", name: "Builder", prompt: "x" }), /cannot be changed/);
+  assert.throws(() => ws.saveRole(workspace, { name: "reviewer", prompt: "x" }), /already used/);
+  assert.throws(() => ws.saveRole(workspace, { name: "Docs", prompt: "  " }), /instructions|should do/);
+
+  const docs = ws.saveRole(workspace, { name: "Documenter", prompt: 'Keep the "docs"\nin step with `code` and $PATH.' });
+  assert.equal(docs.id, "custom-documenter");
+  assert.equal(docs.prompt, "Keep the 'docs' in step with 'code' and 'PATH.");
+  assert.equal(ws.saveRole(workspace, { name: "Documenter!", prompt: "Other." }).id, "custom-documenter-2");
+
+  workspace.profiles[0].role = docs.id;
+  assert.match(standingPrompt("none", docs.id, workspace.roles), /^Keep the 'docs'/);
+  ws.saveRole(workspace, { id: docs.id, name: "Docs writer", prompt: "Write docs." });
+  assert.equal(ws.load().roles?.find((r) => r.id === docs.id)?.name, "Docs writer");
+
+  ws.removeRole(workspace, docs.id);
+  assert.equal(workspace.profiles[0].role, undefined);
+  assert.equal(ws.load().roles?.length, 1);
+  assert.equal(standingPrompt("none", docs.id, workspace.roles), "");
+  assert.throws(() => ws.removeRole(workspace, "tester"), /cannot be removed/);
+});
+
 /** A stand-in for Ollama's embedding endpoint: texts about the same subject get the same direction. */
 function fakeEmbedder(): Promise<{ url: string; calls: number[]; close: () => void }> {
   const subjects = [/deploy|ship|release|docker/i, /database|postgres|sql/i, /jump|player|enemy|level/i];
@@ -154,4 +178,13 @@ test("a newer release is recognised by its version number", () => {
   assert.equal(newer("0.4.9", "0.5.0"), false);
   assert.equal(newer("1.0.0", "0.99.99"), true);
   assert.equal(newer("garbage", "0.5.0"), false);
+});
+
+test("a raw speech-to-text transcript is cleaned up into a tidier prompt", () => {
+  assert.equal(cleanupTranscript("  um so uh fix the the login bug  "), "So fix the login bug.");
+  assert.equal(cleanupTranscript("add a a retry button please"), "Add a retry button please.");
+  assert.equal(cleanupTranscript("is this already done"), "Is this already done.");
+  assert.equal(cleanupTranscript("it works!"), "It works!");
+  assert.equal(cleanupTranscript("   "), "");
+  assert.equal(cleanupTranscript(""), "");
 });

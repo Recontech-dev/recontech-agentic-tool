@@ -5,8 +5,8 @@ Contributions are welcome. The project is MIT licensed (see [LICENSE](LICENSE)),
 ## Set up
 
 ```
-git clone https://github.com/erlruben/agentic-lazy-tool
-cd agentic-lazy-tool
+git clone https://github.com/erlruben/recontech-agentic-tool
+cd recontech-agentic-tool
 npm install
 npm test
 npm start
@@ -43,7 +43,7 @@ printf '#!/bin/sh\nnode scripts/check-secrets.mjs\n' > .git/hooks/pre-commit
 
 ## Rules
 
-- Never commit keys, `.env` files, or anything from `~/.agentic-lazy-tool/` or a Claude Code config folder.
+- Never commit keys, `.env` files, or anything from `~/.recontech-agentic-tool/` or a Claude Code config folder.
 - Add or update a test with each change. Tests must not read the real sessions on your machine; set `ALT_HOME` and `ALT_CLAUDE_HOME` to temporary folders as the existing tests do. Tests must not download the Smart sorting model; pass a stand-in model to `classify` instead.
 - Screenshots and examples must use made-up data, never your own projects or sessions.
 - The app must never read, store or send Claude sign-in credentials. Claude Code handles sign-in.

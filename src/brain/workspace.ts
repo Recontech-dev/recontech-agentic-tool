@@ -3,6 +3,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { CUSTOM_ROLE_PREFIX, MAX_CUSTOM_ROLES, MAX_ROLE_NAME, MAX_ROLE_PROMPT, Role, allRoles, cleanRolePrompt, isBuiltInRole } from "./kits";
 import { defaultClaudeDir, profilesDir, workspaceFile } from "./paths";
 import { Source } from "./sessions";
 
@@ -22,7 +23,7 @@ export interface Profile {
   kind?: "claude" | "ollama" | "free";
   /** The Ollama model, for an "ollama" profile. */
   model?: string;
-  /** The terminal's job in the workspace: "builder", "reviewer", "tester", or none. */
+  /** The terminal's job in the workspace: "builder", "reviewer", "tester", one of the user's own roles, or none. */
   role?: string;
 }
 
@@ -43,6 +44,8 @@ export interface Workspace {
   /** Terminal text size and the brain panel's width, as the user left them. */
   fontSize?: number;
   brainWidth?: number;
+  /** Whether the Files panel (the project folder's files) is shown. */
+  filesOpen?: boolean;
   /**
    * Whether the Free models terminal is kept in a container: its own empty folder, no project files,
    * no memory, no reading of other terminals. On unless the user turns it off.
@@ -50,6 +53,8 @@ export interface Workspace {
   freeContained?: boolean;
   /** Existing Claude Code folders the user chose not to add, so the app does not offer them again. */
   dismissedFolders?: string[];
+  /** Terminal roles the user made in the role manager, next to the built-in ones. */
+  roles?: Role[];
   /** Smart sorting (Laya) is off unless the user turns it on; its model is stored in modelDir. */
   sorting?: { enabled: boolean; modelDir: string };
 }
@@ -190,6 +195,64 @@ export function enableFreeProfile(workspace: Workspace): void {
 export function removeProfile(workspace: Workspace, id: string): void {
   if (workspace.profiles.length <= 1) throw new Error("Keep at least one profile.");
   workspace.profiles = workspace.profiles.filter((p) => p.id !== id);
+  save(workspace);
+}
+
+/**
+ * Renames a profile. The id (what sessions, the graph and control messages key off once a
+ * terminal has started) never changes, only the display name validated the same way addProfile does.
+ */
+export function renameProfile(workspace: Workspace, id: string, name: string): Profile {
+  const profile = workspace.profiles.find((p) => p.id === id);
+  if (!profile) throw new Error("That profile is not in this workspace any more.");
+  const clean = String(name ?? "").trim().slice(0, 30);
+  if (!clean) throw new Error("Give the profile a name.");
+  if (workspace.profiles.some((p) => p.id !== id && p.name.toLowerCase() === clean.toLowerCase())) throw new Error("That name is already used.");
+  profile.name = clean;
+  save(workspace);
+  return profile;
+}
+
+/**
+ * Adds a role of the user's own, or changes one (when id names an existing custom role).
+ * Built-in roles cannot be changed; copy one into a new role instead.
+ */
+export function saveRole(workspace: Workspace, request: { id?: string; name: string; prompt: string }): Role {
+  const id = String(request.id ?? "");
+  if (id && isBuiltInRole(id)) throw new Error("Built-in roles cannot be changed. Copy it into a new role instead.");
+  // Only well-formed custom roles count; anything else in a hand-edited file is dropped on the next save.
+  const custom = allRoles(workspace.roles).filter((r) => !isBuiltInRole(r.id));
+  const existing = id ? custom.find((r) => r.id === id) : undefined;
+  if (id && !existing) throw new Error("That role is not in this workspace any more.");
+  const name = String(request.name ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, MAX_ROLE_NAME);
+  const prompt = cleanRolePrompt(request.prompt);
+  if (!name) throw new Error("Give the role a name.");
+  if (!prompt) throw new Error("Write what a terminal with this role should do.");
+  if (prompt.length > MAX_ROLE_PROMPT) throw new Error(`Keep the instructions under ${MAX_ROLE_PROMPT} characters.`);
+  if (allRoles(custom).some((r) => r.id !== id && r.name.toLowerCase() === name.toLowerCase())) throw new Error("That name is already used.");
+  if (existing) {
+    // The id stays, so terminals that have this role keep it under its new name.
+    existing.name = name;
+    existing.prompt = prompt;
+    workspace.roles = custom;
+    save(workspace);
+    return existing;
+  }
+  if (custom.length >= MAX_CUSTOM_ROLES) throw new Error(`There can be at most ${MAX_CUSTOM_ROLES} roles of your own.`);
+  const slug = CUSTOM_ROLE_PREFIX + (name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "role");
+  let newId = slug;
+  for (let n = 2; custom.some((r) => r.id === newId); n++) newId = `${slug}-${n}`;
+  const role: Role = { id: newId, name, prompt };
+  workspace.roles = [...custom, role];
+  save(workspace);
+  return role;
+}
+
+/** Removes a role of the user's own. Terminals that had it are left without a role. */
+export function removeRole(workspace: Workspace, id: string): void {
+  if (isBuiltInRole(id)) throw new Error("Built-in roles cannot be removed.");
+  workspace.roles = allRoles(workspace.roles).filter((r) => !isBuiltInRole(r.id) && r.id !== id);
+  for (const profile of workspace.profiles) if (profile.role === id) delete profile.role;
   save(workspace);
 }
 

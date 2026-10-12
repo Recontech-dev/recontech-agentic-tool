@@ -17,7 +17,8 @@ beforeEach(() => {
 // Load after ALT_HOME is set; paths are read on every call, so one import serves every test.
 import { Brain } from "../brain/brain";
 import { findTokens, redact } from "../brain/redact";
-import { readTranscript, typedText } from "../brain/sessions";
+import { loadIndex, readTranscript, refresh, removeSession, renameProfileSessions, typedText } from "../brain/sessions";
+import { loadLabels, renameProfileLabels, saveLabels } from "../brain/sorting";
 import { addNote, label, notes, projectDir, removeNote, tree } from "../brain/store";
 import * as ws from "../brain/workspace";
 
@@ -115,6 +116,81 @@ test("profiles: own config folder, unique names, at most six, never zero", () =>
   assert.equal(ws.load().profiles.length, 6);
   for (const p of [...workspace.profiles].slice(1)) ws.removeProfile(workspace, p.id);
   assert.throws(() => ws.removeProfile(workspace, workspace.profiles[0].id), /at least one/);
+});
+
+test("renaming a profile keeps its id and moves its past sessions and sorting labels onto the new name", () => {
+  const workspace = ws.load();
+  const alice = ws.addProfile(workspace, "Alice");
+  ws.addProfile(workspace, "Bob");
+  assert.throws(() => ws.renameProfile(workspace, alice.id, "bob"), /already used/);
+  assert.throws(() => ws.renameProfile(workspace, alice.id, "  "), /Give the profile a name/);
+
+  const shop = path.join(root, "shop");
+  fs.mkdirSync(shop);
+  transcript(alice.configDir!, shop, "s1", [user("fix the build", shop), assistant("done", shop)]);
+  refresh([{ profile: "Alice", configDir: alice.configDir! }]);
+  assert.ok(Object.keys(loadIndex()).some((k) => k.startsWith("Alice:")));
+  saveLabels({ "Alice:s1": { type: "bug fix", typeConfidence: 0.9, finished: 0.9, decision: 0, modified: 1 } });
+
+  const renamed = ws.renameProfile(workspace, alice.id, "Alicia");
+  assert.equal(renamed.id, alice.id);
+  assert.equal(renamed.name, "Alicia");
+  renameProfileSessions("Alice", "Alicia");
+  renameProfileLabels("Alice", "Alicia");
+
+  const index = loadIndex();
+  assert.ok(!Object.keys(index).some((k) => k.startsWith("Alice:")));
+  const moved = Object.entries(index).find(([k]) => k.startsWith("Alicia:"))!;
+  assert.equal((moved[1] as any).profile, "Alicia");
+  assert.ok("Alicia:s1" in loadLabels());
+});
+
+test("a session removed from the brain stays out until its transcript changes, and the transcript is kept", () => {
+  const workspace = ws.load();
+  const work = ws.addProfile(workspace, "Work");
+  const shop = path.join(root, "shop");
+  fs.mkdirSync(shop);
+  const file = transcript(work.configDir!, shop, "s1", [user("fix the build", shop), assistant("done", shop)]);
+  const source = [{ profile: "Work", configDir: work.configDir! }];
+  assert.equal(refresh(source).sessions.length, 1);
+
+  assert.equal(removeSession("Work", "s1"), true);
+  assert.equal(removeSession("Work", "s1"), false);
+  assert.equal(removeSession("Other", "s1"), false);
+  assert.equal(refresh(source).sessions.length, 0);
+  assert.ok(fs.existsSync(file));
+
+  // Continuing the session writes to its transcript, which brings it back.
+  fs.appendFileSync(file, JSON.stringify(user("and the tests", shop)) + "\n");
+  fs.utimesSync(file, new Date(), new Date(Date.now() + 5000));
+  assert.equal(refresh(source).sessions.length, 1);
+});
+
+test("renaming a profile named \"A\" never steals sessions from a profile named \"A:b\"", () => {
+  const workspace = ws.load();
+  const a = ws.addProfile(workspace, "A");
+  const ab = ws.addProfile(workspace, "A:b");
+
+  const shop = path.join(root, "shop2");
+  fs.mkdirSync(shop);
+  transcript(a.configDir!, shop, "s1", [user("a's work", shop), assistant("done", shop)]);
+  transcript(ab.configDir!, shop, "s2", [user("a:b's work", shop), assistant("done", shop)]);
+  refresh([{ profile: "A", configDir: a.configDir! }, { profile: "A:b", configDir: ab.configDir! }]);
+  saveLabels({ "A:s1": { type: "bug fix", typeConfidence: 1, finished: 1, decision: 0, modified: 1 }, "A:b:s2": { type: "feature", typeConfidence: 1, finished: 1, decision: 0, modified: 1 } });
+
+  ws.renameProfile(workspace, a.id, "Alpha");
+  renameProfileSessions("A", "Alpha");
+  renameProfileLabels("A", "Alpha");
+
+  const index = loadIndex();
+  assert.ok(Object.keys(index).some((k) => k.startsWith("Alpha:") && !k.startsWith("Alpha:b:")));
+  assert.ok(Object.keys(index).some((k) => k.startsWith("A:b:")), "A:b's session must stay put");
+  assert.ok(!Object.keys(index).some((k) => k.startsWith("Alpha:b:")), "A:b's session must not be relabelled Alpha:b");
+
+  const labels = loadLabels();
+  assert.ok("Alpha:s1" in labels);
+  assert.ok("A:b:s2" in labels, "A:b's label must stay put");
+  assert.ok(!("Alpha:b:s2" in labels), "A:b's label must not be relabelled Alpha:b");
 });
 
 test("the MCP server answers like Claude Code expects and shares the brain", async () => {

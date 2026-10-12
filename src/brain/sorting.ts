@@ -72,6 +72,25 @@ export function saveLabels(labels: Record<string, Labels>): void {
   fs.renameSync(temp, labelsFile());
 }
 
+/** Moves a renamed profile's Smart sorting labels onto its new name, matching sessions.ts's migration. */
+export function renameProfileLabels(oldName: string, newName: string): void {
+  if (oldName === newName) return;
+  const labels = loadLabels();
+  const prefix = `${oldName}:`;
+  let changed = false;
+  for (const [key, label] of Object.entries(labels)) {
+    if (!key.startsWith(prefix)) continue;
+    const rest = key.slice(prefix.length);
+    // Names can contain ":", so "A:" also starts "A:b:<id>" (profile "A:b"); a session id never does.
+    if (rest.includes(":")) continue;
+    const newKey = `${newName}:${rest}`;
+    delete labels[key];
+    if (!labels[newKey]) labels[newKey] = label;
+    changed = true;
+  }
+  if (changed) saveLabels(labels);
+}
+
 /** Sessions that have settled and have no labels for their current transcript yet. */
 export function pending(sessions: Session[], labels: Record<string, Labels>, now = Date.now()): Session[] {
   return sessions.filter((s) => now - s.modified > SETTLE_MS && labels[sessionKey(s)]?.modified !== s.modified);

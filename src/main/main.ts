@@ -1,6 +1,6 @@
 // The Electron main process: one window with a terminal per Claude Code profile and the brain beside them.
 
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -8,16 +8,20 @@ import * as pty from "node-pty";
 import { ChildProcess, spawn } from "node:child_process";
 
 import { Brain } from "../brain/brain";
-import { KITS, ROLES, detectKit, kitById, roleById, standingPrompt } from "../brain/kits";
+import * as files from "../brain/files";
+import { KITS, allRoles, detectKit, isBuiltInRole, kitById, roleById, standingPrompt } from "../brain/kits";
 import { claudeCommand, ollamaModels, online, profileEnv, signedInAs } from "../brain/launch";
 import { exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
+import { cleanupTranscript } from "../brain/speech";
 import { addNote, removeNote } from "../brain/store";
-import { containerDir, home } from "../brain/paths";
-import { sameFolder } from "../brain/sessions";
-import { bundleReady } from "../brain/sorting";
+import { containerDir, earlierHomes, home } from "../brain/paths";
+import { moveData } from "../brain/relocate";
+import { removeSession, renameProfileSessions, sameFolder } from "../brain/sessions";
+import { bundleReady, renameProfileLabels } from "../brain/sorting";
 import { newer } from "../brain/version";
 import * as ws from "../brain/workspace";
 import { Control } from "./control";
+import { Inbox } from "./inbox";
 import { FreeModels } from "./free";
 
 const BRAIN_REFRESH_MS = 10_000;
@@ -27,6 +31,22 @@ const MODEL_SPACE_BYTES = 2.5 * 1024 ** 3;
 
 // Screenshots taken for automated checks miss GPU-drawn content, so those runs draw in software.
 if (process.env.ALT_SCREENSHOT) app.disableHardwareAcceleration();
+
+// The data lives on the drive the app runs from (see defaultHome). Data from an earlier version
+// (the user's folder, or a folder named after the app's old name) is moved there first, before
+// anything opens it; if that fails, the old folder stays in use for now.
+let dataNotice = "";
+const earlier = process.env.ALT_HOME ? undefined : [...earlierHomes()].reverse().find((dir) => fs.existsSync(dir));
+if (earlier && path.resolve(home()).toLowerCase() !== path.resolve(earlier).toLowerCase()) {
+  const result = moveData(earlier, home());
+  if (result.moved) {
+    dataNotice = `The app's data (workspace, memory, sign-ins of profiles made here) moved to ${home()}.` +
+      (result.leftBehind ? ` The old copy at ${result.leftBehind} could not be removed (perhaps another copy of the app still has it open); you can delete it yourself.` : "");
+  } else if (result.problem) {
+    process.env.ALT_HOME = earlier;
+    dataNotice = `The app's data could not be moved to ${path.dirname(home())} (${result.problem}), so it stays in ${earlier} for now. It is tried again at the next start.`;
+  }
+}
 
 // Electron's single-instance lock is scoped to userData, which by default is NOT under home()/
 // ALT_HOME. Moving it there means two real launches (same home) correctly fight over one lock,
@@ -83,7 +103,7 @@ function mcpConfigFile(profile?: ws.Profile): string {
 /** The link that lets one terminal's Claude Code list, read and message the others. */
 const control = new Control({
   terminals: () => workspace.profiles.map((p) => ({
-    name: p.name, kind: p.kind ?? "claude", running: terminals.has(p.id), role: p.role ? roleById(p.role).name : undefined,
+    name: p.name, kind: p.kind ?? "claude", running: terminals.has(p.id), role: p.role ? roleById(p.role, workspace.roles).name : undefined,
   })),
   read: async (name, lines) => {
     const profile = workspace.profiles.find((p) => p.name === name);
@@ -93,14 +113,40 @@ const control = new Control({
   contained: (name) => ws.isContained(workspace, workspace.profiles.find((p) => p.name === name)),
   deliver: (name, text) => {
     const profile = workspace.profiles.find((p) => p.name === name);
-    const term = profile && terminals.get(profile.id);
-    if (!term) return;
-    // Sent as a paste so line breaks stay inside the message, then Enter to submit it.
-    term.write(`\x1b[200~${text.replace(/\x1b/g, "")}\x1b[201~`);
-    setTimeout(() => terminals.get(profile.id) === term && term.write("\r"), 400);
-    send("term:message", profile.id);
+    if (!profile || !terminals.has(profile.id)) return "sent";
+    // While the user is typing there, the message waits, and so does any message after it, to keep their order.
+    if (inbox.busy(profile.id) || inbox.waiting(profile.id)) {
+      inbox.hold(profile.id, text);
+      send("term:waiting", profile.id, inbox.waiting(profile.id));
+      return "queued";
+    }
+    writeMessage(profile.id, text);
+    return "sent";
   },
 });
+
+/** Messages from other terminals that wait while the user is typing in the terminal they are for. */
+const inbox = new Inbox();
+const INBOX_CHECK_MS = 500;
+
+/** Type a message from another terminal into a terminal as a prompt. */
+function writeMessage(id: string, text: string): void {
+  const term = terminals.get(id);
+  if (!term) return;
+  // Sent as a paste so line breaks stay inside the message, then Enter to submit it.
+  term.write(`\x1b[200~${text.replace(/\x1b/g, "")}\x1b[201~`);
+  setTimeout(() => terminals.get(id) === term && term.write("\r"), 400);
+  send("term:message", id);
+}
+
+/** Send the next waiting message to a terminal once it is free, or right away when the user asks. */
+function deliverWaiting(id: string, force = false): void {
+  if (!terminals.has(id)) return;
+  const text = inbox.next(id, force);
+  if (text === undefined) return;
+  writeMessage(id, text);
+  send("term:waiting", id, inbox.waiting(id));
+}
 
 function shellCommand(): { file: string; args: string[] } {
   if (process.platform === "win32") return { file: "powershell.exe", args: ["-NoLogo"] };
@@ -118,6 +164,7 @@ function stopTerminal(id: string): void {
 
 function startTerminal(id: string, options: { folder?: string; resume?: string } = {}): void {
   stopTerminal(id);
+  inbox.restarted(id);
   const profile = workspace.profiles.find((p) => p.id === id);
   if (!profile) return;
   const contained = ws.isContained(workspace, profile);
@@ -140,7 +187,7 @@ function startTerminal(id: string, options: { folder?: string; resume?: string }
   // ALT_NO_CLAUDE is for automated checks of the window: the shell opens but Claude Code is not started.
   // A contained terminal has no project, so it gets no project kit; every other terminal gets the
   // kit of the folder it works in and the role the user gave it.
-  const standing = contained ? "" : standingPrompt(currentKit(folder), profile.role);
+  const standing = contained ? "" : standingPrompt(currentKit(folder), profile.role, workspace.roles);
   if (!process.env.ALT_NO_CLAUDE) term.write(claudeCommand(profile, mcpConfigFile(profile), options.resume, contained, standing) + "\r");
 }
 
@@ -186,6 +233,77 @@ function stopSorter(): void {
   sorter = null;
 }
 
+let transcriber: ChildProcess | null = null;
+let transcriberStatus: Record<string, unknown> = { status: "off" };
+let transcriberReady: Promise<void> | null = null;
+const transcribePending = new Map<string, (answer: { text?: string; error?: string }) => void>();
+
+function setTranscriberStatus(status: Record<string, unknown>): void {
+  transcriberStatus = status;
+  send("mic:status", status);
+}
+
+/** Starts the speech-to-text worker on first use and resolves once it has a model loaded and is ready for requests. */
+function startTranscriber(): Promise<void> {
+  if (transcriberReady) return transcriberReady;
+  setTranscriberStatus({ status: "loading" });
+  transcriberReady = new Promise((resolve, reject) => {
+    const env: Record<string, string> = { ...(process.env as Record<string, string>), ELECTRON_RUN_AS_NODE: "1", ALT_HOME: home(), WHISPER_CACHE: path.join(home(), "models") };
+    const child = spawn(process.execPath, [unpacked("brain", "transcriber.js")], { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    transcriber = child;
+    let buffer = "";
+    child.stdout!.on("data", (chunk) => {
+      buffer += chunk;
+      const lines = buffer.split("\n");
+      buffer = lines.pop()!;
+      for (const line of lines) {
+        let message: any;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (message.id) {
+          transcribePending.get(message.id)?.(message);
+          transcribePending.delete(message.id);
+          continue;
+        }
+        setTranscriberStatus(message);
+        if (message.status === "ready") resolve();
+        if (message.status === "error") reject(new Error(message.message));
+      }
+    });
+    child.on("exit", (code) => {
+      if (transcriber === child) transcriber = null;
+      transcriberReady = null;
+      for (const resolvePending of transcribePending.values()) resolvePending({ error: "The speech model stopped." });
+      transcribePending.clear();
+      if (code) setTranscriberStatus({ status: "error", message: `stopped (exit code ${code})` });
+      // A worker that quits before it is ready would otherwise leave every recording waiting forever.
+      reject(new Error(`The speech model could not start${code ? ` (exit code ${code})` : ""}.`));
+    });
+  });
+  transcriberReady.catch(() => {});
+  return transcriberReady;
+}
+
+/** Transcribes 16kHz mono PCM audio with the local Whisper model, downloading it on first use. */
+async function transcribe(pcm: number[]): Promise<{ text?: string; error?: string }> {
+  try {
+    await startTranscriber();
+  } catch (error) {
+    return { error: (error as Error).message };
+  }
+  if (!transcriber) return { error: "The speech model is not available." };
+  const id = Math.random().toString(36).slice(2);
+  const answer = await new Promise<{ text?: string; error?: string }>((resolve) => {
+    transcribePending.set(id, resolve);
+    transcriber!.stdin!.write(JSON.stringify({ id, pcm }) + "\n");
+  });
+  if (answer.text) answer.text = cleanupTranscript(answer.text);
+  return answer;
+}
+
 /** Free bytes on the drive that holds `folder` (or its nearest existing parent). */
 function freeSpace(folder: string): number {
   let dir = folder;
@@ -218,7 +336,7 @@ async function toggleSorting(): Promise<Record<string, unknown>> {
     if (answer.response !== 0) return sortingStatus;
     const choice = await dialog.showOpenDialog(win!, { title: "Folder for the Smart sorting model", properties: ["openDirectory", "createDirectory"] });
     if (choice.canceled || !choice.filePaths[0]) return sortingStatus;
-    modelDir = path.join(choice.filePaths[0], "agentic-lazy-tool-model");
+    modelDir = path.join(choice.filePaths[0], "recontech-agentic-tool-model");
     if (freeSpace(modelDir) < MODEL_SPACE_BYTES) {
       setSortingStatus({ status: "error", message: "That drive does not have 2.5 GB free either." });
       return sortingStatus;
@@ -236,8 +354,8 @@ function currentKit(folder: string): string {
   return workspace.kits?.[folder.toLowerCase()] ?? detectKit(folder);
 }
 
-const RELEASES_API = "https://api.github.com/repos/erlruben/agentic-lazy-tool/releases/latest";
-const RELEASES_PAGE = "https://github.com/erlruben/agentic-lazy-tool/releases/latest";
+const RELEASES_API = "https://api.github.com/repos/erlruben/recontech-agentic-tool/releases/latest";
+const RELEASES_PAGE = "https://github.com/erlruben/recontech-agentic-tool/releases/latest";
 
 /** Ask GitHub for the newest release. Only the version number is read; nothing about the user is sent. */
 async function checkForUpdate(): Promise<{ current: string; latest: string } | null> {
@@ -280,8 +398,10 @@ function createWindow(): void {
   win = new BrowserWindow({
     width: 1500,
     height: 900,
+    minWidth: 900,
+    minHeight: 560,
     backgroundColor: "#12161c",
-    title: "Agentic Lazy Tool",
+    title: "Recontech Agentic Tool",
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true,
@@ -290,6 +410,14 @@ function createWindow(): void {
     },
   });
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  // The page holds back closing while the editor has unsaved edits; ask whether to close anyway.
+  win.webContents.on("will-prevent-unload", (event) => {
+    const answer = dialog.showMessageBoxSync(win!, {
+      type: "warning", buttons: ["Close without saving", "Keep editing"], defaultId: 1, cancelId: 1,
+      message: "Some open files have unsaved changes.", detail: "Closing now loses them.",
+    });
+    if (answer === 0) event.preventDefault();
+  });
   win.webContents.on("will-navigate", (event) => event.preventDefault());
   // A reload asks for every terminal again, so the old shells go first.
   win.webContents.on("did-start-loading", () => [...terminals.keys()].forEach(stopTerminal));
@@ -313,6 +441,7 @@ function createWindow(): void {
 function showRecoveryNotice(): void {
   const notice = ws.takeRecoveryNotice();
   if (notice) dialog.showMessageBox(win!, { type: "warning", title: "Workspace reset", message: notice });
+  if (dataNotice) dialog.showMessageBox(win!, { type: "info", title: "Data folder", message: dataNotice });
 }
 
 function result<T>(work: () => T): T | { error: string } {
@@ -368,6 +497,7 @@ ipcMain.handle("profile:remove", (_event, id: string) =>
   result(() => {
     stopTerminal(id);
     ws.removeProfile(workspace, String(id));
+    inbox.forget(String(id));
     return workspace;
   }),
 );
@@ -387,6 +517,13 @@ ipcMain.handle("note:remove", (_event, ref: { folder: string; number: number }) 
     const removed = removeNote(String(ref?.folder), Number(ref?.number));
     pushGraph(true);
     return { removed: !!removed };
+  }),
+);
+ipcMain.handle("session:remove", (_event, ref: { profile: string; id: string }) =>
+  result(() => {
+    const removed = removeSession(String(ref?.profile), String(ref?.id));
+    pushGraph(true);
+    return { removed };
   }),
 );
 ipcMain.handle("share:info", () => {
@@ -411,7 +548,7 @@ ipcMain.handle("share:import", () =>
 ipcMain.handle("kit:get", () => {
   const detected = workspace.folder ? detectKit(workspace.folder) : "none";
   const chosen = workspace.folder ? currentKit(workspace.folder) : "none";
-  return { kits: KITS.map((k) => ({ id: k.id, name: k.name })), roles: ROLES.map((r) => ({ id: r.id, name: r.name })), kit: chosen, detected: kitById(detected).name };
+  return { kits: KITS.map((k) => ({ id: k.id, name: k.name })), roles: allRoles(workspace.roles).map((r) => ({ id: r.id, name: r.name })), kit: chosen, detected: kitById(detected).name };
 });
 ipcMain.handle("kit:set", (_event, id: string) => {
   if (!workspace.folder) return workspace;
@@ -422,16 +559,93 @@ ipcMain.handle("kit:set", (_event, id: string) => {
 ipcMain.handle("profile:role", (_event, id: string, role: string) => {
   const profile = workspace.profiles.find((p) => p.id === id);
   if (profile) {
-    profile.role = roleById(String(role)).id || undefined;
+    profile.role = roleById(String(role), workspace.roles).id || undefined;
     ws.save(workspace);
   }
   return workspace;
 });
-ipcMain.handle("ui:save", (_event, ui: { fontSize?: number; brainWidth?: number }) => {
+/** The role manager: every role with its instructions, whether it is built in, and the terminals that have it. */
+ipcMain.handle("role:list", () =>
+  allRoles(workspace.roles).filter((r) => r.id).map((r) => ({
+    ...r, builtIn: isBuiltInRole(r.id), usedBy: workspace.profiles.filter((p) => p.role === r.id).map((p) => p.name),
+  })),
+);
+ipcMain.handle("role:save", (_event, request: { id?: string; name: string; prompt: string }) =>
+  result(() => ({ role: ws.saveRole(workspace, request ?? { name: "", prompt: "" }), workspace })),
+);
+ipcMain.handle("role:remove", (_event, id: string) =>
+  result(() => {
+    ws.removeRole(workspace, String(id));
+    return workspace;
+  }),
+);
+ipcMain.handle("profile:rename", (_event, id: string, name: string) =>
+  result(() => {
+    const before = workspace.profiles.find((p) => p.id === String(id))?.name;
+    ws.renameProfile(workspace, String(id), String(name));
+    // Sessions and Smart sorting labels are filed under the old name; move them so Resume still finds them.
+    if (before) {
+      renameProfileSessions(before, workspace.profiles.find((p) => p.id === String(id))!.name);
+      renameProfileLabels(before, workspace.profiles.find((p) => p.id === String(id))!.name);
+    }
+    pushGraph(true);
+    return workspace;
+  }),
+);
+ipcMain.handle("ui:save", (_event, ui: { fontSize?: number; brainWidth?: number; filesOpen?: boolean }) => {
   if (Number(ui?.fontSize) >= 9 && Number(ui?.fontSize) <= 24) workspace.fontSize = Number(ui.fontSize);
   if (Number(ui?.brainWidth) >= 240 && Number(ui?.brainWidth) <= 1200) workspace.brainWidth = Math.round(Number(ui.brainWidth));
+  if (typeof ui?.filesOpen === "boolean") workspace.filesOpen = ui.filesOpen;
   ws.save(workspace);
 });
+// The Files panel. Paths come from the page relative to the project folder, and files.inside()
+// refuses any that would lead out of it.
+ipcMain.handle("files:list", (_event, relative: string) => result(() => files.list(workspace.folder, String(relative ?? ""))));
+ipcMain.handle("files:open", async (_event, relative: string) => {
+  try {
+    const full = files.inside(workspace.folder, String(relative ?? ""));
+    // Programs and scripts would run if opened, so they are only shown in Explorer.
+    if (files.runnable(full)) {
+      shell.showItemInFolder(full);
+      return { revealed: true };
+    }
+    const problem = await shell.openPath(full);
+    return problem ? { error: problem } : { opened: true };
+  } catch (error) {
+    return { error: (error as Error).message };
+  }
+});
+ipcMain.handle("files:reveal", (_event, relative: string) =>
+  result(() => {
+    const full = files.inside(workspace.folder, String(relative ?? ""));
+    // The project folder itself opens; anything in it is shown selected in its folder.
+    if (!String(relative ?? "")) shell.openPath(full);
+    else shell.showItemInFolder(full);
+    return { revealed: true };
+  }),
+);
+// The editor. Every path goes through the same project-folder check as the Files panel.
+ipcMain.handle("files:read", (_event, relative: string) => {
+  try {
+    return files.readText(workspace.folder, String(relative ?? ""));
+  } catch (error) {
+    // "binary" or "large" tells the window to open the file with its own app instead.
+    return { error: (error as Error).message, code: (error as { code?: string }).code };
+  }
+});
+ipcMain.handle("files:changed-at", (_event, relative: string) => files.changedAt(workspace.folder, String(relative ?? "")));
+ipcMain.handle("files:write", (_event, file: { path: string; text: string; mtime: number; bom: boolean; force?: boolean }) =>
+  result(() => files.writeText(workspace.folder, String(file?.path ?? ""), String(file?.text ?? ""), Number(file?.mtime), !!file?.bom, !!file?.force)),
+);
+ipcMain.handle("files:committed", (_event, relative: string) => result(() => ({ text: files.committed(workspace.folder, String(relative ?? "")) })));
+// Hands the file to an installed VS Code through its vscode:// link, so no shell or command line is involved.
+ipcMain.handle("files:vscode", (_event, relative: string) =>
+  result(() => {
+    const full = files.inside(workspace.folder, String(relative ?? ""));
+    shell.openExternal(`vscode://file/${encodeURI(full.replace(/\\/g, "/")).replace(/[#?]/g, encodeURIComponent)}`);
+    return { opened: true };
+  }),
+);
 ipcMain.handle("update:check", () => checkForUpdate());
 // Only ever opens the app's own releases page, never an address the page supplies.
 ipcMain.handle("update:open", () => shell.openExternal(RELEASES_PAGE));
@@ -457,6 +671,8 @@ ipcMain.handle("free:test", (_event, entries?: { id: string; key?: string; model
 );
 ipcMain.handle("sorting:get", () => sortingStatus);
 ipcMain.handle("sorting:toggle", () => toggleSorting());
+ipcMain.handle("mic:get", () => transcriberStatus);
+ipcMain.handle("mic:transcribe", (_event, pcm: number[]) => transcribe(Array.isArray(pcm) ? pcm.map(Number) : []));
 ipcMain.handle("session:resume", (_event, ref: { profile: string; id: string; folder: string }) => {
   const profile = workspace.profiles.find((p) => p.name === ref?.profile);
   if (!profile) return { error: `The profile ${ref?.profile} is not in this workspace any more.` };
@@ -468,7 +684,12 @@ ipcMain.on("term:start", (_event, id: string, cols: number, rows: number) => {
   if (cols > 0 && rows > 0) sizes.set(String(id), { cols: Math.floor(cols), rows: Math.floor(rows) });
   startTerminal(String(id));
 });
-ipcMain.on("term:input", (_event, id: string, data: string) => terminals.get(String(id))?.write(String(data)));
+ipcMain.on("term:input", (_event, id: string, data: string) => {
+  inbox.typed(String(id), String(data));
+  terminals.get(String(id))?.write(String(data));
+});
+// The "message waiting" button in a terminal's title bar: the user wants it now, typing or not.
+ipcMain.handle("term:deliver-now", (_event, id: string) => deliverWaiting(String(id), true));
 ipcMain.on("term:resize", (_event, id: string, cols: number, rows: number) => {
   if (!(cols > 0 && rows > 0)) return;
   sizes.set(String(id), { cols: Math.floor(cols), rows: Math.floor(rows) });
@@ -476,6 +697,8 @@ ipcMain.on("term:resize", (_event, id: string, cols: number, rows: number) => {
 });
 
 app.whenReady().then(async () => {
+  // Electron denies permission requests (microphone included) unless something explicitly answers them.
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === "media"));
   await free.start();
   await control.listen();
   control.writeAddress(controlFile());
@@ -483,6 +706,7 @@ app.whenReady().then(async () => {
   createWindow();
   showRecoveryNotice();
   setInterval(pushGraph, BRAIN_REFRESH_MS);
+  setInterval(() => inbox.pending().forEach((id) => deliverWaiting(id)), INBOX_CHECK_MS);
   checkNetwork();
   setInterval(checkNetwork, NETWORK_CHECK_MS);
   if (workspace.sorting?.enabled) {
@@ -493,6 +717,7 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", () => {
   stopSorter();
+  transcriber?.kill();
   [...terminals.keys()].forEach(stopTerminal);
   app.quit();
 });

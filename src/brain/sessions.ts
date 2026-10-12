@@ -169,6 +169,51 @@ export function refresh(sources: Source[]): { sessions: Session[]; changed: bool
   return { sessions, changed };
 }
 
+/**
+ * Moves the session index's entries for a renamed profile onto its new name, so Resume and the
+ * brain graph still find them (they are keyed and tagged by the profile name, not its id).
+ */
+export function renameProfileSessions(oldName: string, newName: string): void {
+  if (oldName === newName) return;
+  const index = loadIndex();
+  const prefix = `${oldName}:`;
+  let changed = false;
+  for (const [key, entry] of Object.entries(index)) {
+    if (!key.startsWith(prefix)) continue;
+    const rest = key.slice(prefix.length);
+    // Names can contain ":", so "A:" also starts "A:b:<id>" (profile "A:b"); the filename itself never
+    // has one, and a kept Session also carries its own profile, so both are checked before moving it.
+    if (rest.includes(":") || ("profile" in entry && entry.profile !== oldName)) continue;
+    const newKey = `${newName}:${rest}`;
+    delete index[key];
+    // A transcript already re-read under the new name (its file changed since) takes priority.
+    if (!index[newKey]) index[newKey] = "skipped" in entry ? entry : { ...entry, profile: newName };
+    changed = true;
+  }
+  if (changed) {
+    fs.mkdirSync(path.dirname(sessionIndexFile()), { recursive: true });
+    fs.writeFileSync(sessionIndexFile(), JSON.stringify(index), "utf8");
+  }
+}
+
+/**
+ * Takes a session out of the brain (the graph, search, resume lists). Claude Code's own transcript is
+ * left on disk; the index only remembers it as skipped, so it stays out until the session is continued.
+ * Returns false when the brain did not have that session.
+ */
+export function removeSession(profile: string, id: string): boolean {
+  const index = loadIndex();
+  const key = Object.keys(index).find((k) => {
+    const entry = index[k];
+    return !("skipped" in entry) && entry.profile === profile && entry.id === id;
+  });
+  if (!key) return false;
+  index[key] = { skipped: true, modified: index[key].modified };
+  fs.mkdirSync(path.dirname(sessionIndexFile()), { recursive: true });
+  fs.writeFileSync(sessionIndexFile(), JSON.stringify(index), "utf8");
+  return true;
+}
+
 export function sameFolder(a: string, b: string): boolean {
   const clean = (p: string) => path.resolve(p).replace(/[\\/]+$/, "").toLowerCase();
   return clean(a) === clean(b);

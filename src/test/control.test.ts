@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 
+import { ROLES, roleById, standingPrompt } from "../brain/kits";
 import { Control, MAX_MESSAGES } from "../main/control";
 
 function setup() {
@@ -103,6 +104,74 @@ test("Claude Code reaches the other terminals through the brain's MCP server", a
   assert.equal(closed.isError, true);
   assert.match(closed.content[0].text, /not answering/);
   server.kill();
+});
+
+test("a Manager terminal sees the others' roles and hands work to Builder, Reviewer and Tester", async (t) => {
+  const delivered: [string, string][] = [];
+  const team = [
+    { name: "Lead", role: "manager" }, { name: "Coder", role: "builder" },
+    { name: "Checker", role: "reviewer" }, { name: "QA", role: "tester" }, { name: "Spare", role: undefined },
+  ];
+  const control = new Control({
+    // As main.ts reports them: the role's display name, not its id.
+    terminals: () => team.map((m) => ({ name: m.name, kind: "claude", running: true, role: m.role ? roleById(m.role).name : undefined })),
+    read: async () => "",
+    deliver: (name, text) => void delivered.push([name, text]),
+  });
+  await control.listen();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "alt-manager-"));
+  const controlFile = path.join(dir, "control.json");
+  control.writeAddress(controlFile);
+  const server = spawn(process.execPath, [path.join(__dirname, "..", "mcp", "server.js")], {
+    cwd: dir, env: { ...process.env, ALT_HOME: path.join(dir, "home"), ALT_CLAUDE_HOME: path.join(dir, "claude"), ALT_PROFILE: "Lead", ALT_CONTROL: controlFile },
+  });
+  t.after(() => {
+    server.kill();
+    control.close();
+  });
+  const replies: any[] = [];
+  let buffer = "";
+  server.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    const lines = buffer.split("\n");
+    buffer = lines.pop()!;
+    replies.push(...lines.filter(Boolean).map((l) => JSON.parse(l)));
+  });
+  let next = 1;
+  const rpc = async (method: string, params: object = {}) => {
+    const id = next++;
+    server.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    for (let i = 0; i < 500 && !replies.some((r) => r.id === id); i++) await new Promise((r) => setTimeout(r, 30));
+    return replies.find((r) => r.id === id).result;
+  };
+  const tool = (name: string, args: object = {}) => rpc("tools/call", { name, arguments: args });
+
+  // Every tool a role's instructions tell Claude Code to use is one the brain's server really offers.
+  const offered = new Set<string>((await rpc("tools/list")).tools.map((x: any) => x.name));
+  for (const role of ROLES) {
+    for (const named of role.prompt.match(/\b[a-z]+_[a-z_]+\b/g) ?? []) assert.ok(offered.has(named), `${role.name} names ${named}, which the server does not offer`);
+  }
+  const manager = standingPrompt("none", "manager");
+  assert.match(manager, /Your role in this workspace is Manager/);
+  for (const word of ["list_terminals", "message_terminal", "Builder", "Reviewer", "Tester"]) assert.ok(manager.includes(word), `the Manager is told about ${word}`);
+
+  // What the Manager sees, and the hand-off it is told to make.
+  const list = (await tool("list_terminals")).content[0].text;
+  assert.match(list, /- Lead \(this terminal\): Manager, claude, running/);
+  assert.match(list, /- Coder: Builder, claude, running/);
+  assert.match(list, /- Checker: Reviewer, claude, running/);
+  assert.match(list, /- QA: Tester, claude, running/);
+  assert.match(list, /- Spare: claude, running/);
+  const byRole = (role: string) => new RegExp(`- ([^\n(]+?): ${role},`).exec(list)![1];
+  for (const [role, task] of [["Builder", "Add a logout button in src/ui/nav.ts; done when npm test passes."], ["Reviewer", "Review src/ui/nav.ts."], ["Tester", "Test logout."]]) {
+    const to = byRole(role);
+    assert.match((await tool("message_terminal", { to, message: task })).content[0].text, new RegExp(`Delivered to "${to}"`));
+  }
+  assert.deepEqual(delivered, [
+    ["Coder", '[Message from the "Lead" terminal] Add a logout button in src/ui/nav.ts; done when npm test passes.'],
+    ["Checker", '[Message from the "Lead" terminal] Review src/ui/nav.ts.'],
+    ["QA", '[Message from the "Lead" terminal] Test logout.'],
+  ]);
 });
 
 test("a contained terminal gets no memory and no way to read others", async (t) => {

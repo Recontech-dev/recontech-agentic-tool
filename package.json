@@ -1,10 +1,10 @@
 {
-  "name": "agentic-lazy-tool",
-  "version": "0.5.0",
+  "name": "recontech-agentic-tool",
+  "version": "0.5.1",
   "description": "Claude Code workspace: several Claude Code profiles side by side, sharing one local brain built from your past sessions",
   "license": "MIT",
   "author": "Earl Batenga",
-  "homepage": "https://github.com/erlruben/agentic-lazy-tool",
+  "homepage": "https://github.com/erlruben/recontech-agentic-tool",
   "main": "dist/main/main.js",
   "private": true,
   "scripts": {
@@ -12,12 +12,14 @@
     "start": "npm run build && node scripts/start.mjs",
     "test": "npm run build && node --test dist/test/*.test.js",
     "check-secrets": "node scripts/check-secrets.mjs --all",
-    "dist": "npm run build && electron-builder --win --publish never"
+    "dist": "npm run build && node scripts/dist.mjs"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.1",
     "@receptron/laya": "^0.1.2",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
+    "monaco-editor": "0.56.0",
     "node-pty": "^1.1.0"
   },
   "devDependencies": {
@@ -27,8 +29,8 @@
     "typescript": "^5.7.2"
   },
   "build": {
-    "appId": "io.github.erlruben.agentic-lazy-tool",
-    "productName": "Agentic Lazy Tool",
+    "appId": "io.github.erlruben.recontech-agentic-tool",
+    "productName": "Recontech Agentic Tool",
     "directories": {
       "output": "release"
     },
@@ -36,7 +38,9 @@
       "dist/**",
       "!dist/test/**",
       "static/**",
-      "package.json"
+      "package.json",
+      "!node_modules/monaco-editor/esm/**",
+      "!node_modules/monaco-editor/dev/**"
     ],
     "asarUnpack": [
       "dist/brain/**",
@@ -44,15 +48,20 @@
       "node_modules/@receptron/laya/**",
       "node_modules/onnxruntime-node/**",
       "node_modules/onnxruntime-common/**",
-      "node_modules/@huggingface/tokenizers/**"
+      "node_modules/@huggingface/tokenizers/**",
+      "node_modules/@huggingface/transformers/**",
+      "node_modules/sharp/**"
     ],
     "win": {
       "target": "nsis",
-      "artifactName": "AgenticLazyTool-Setup-${version}.exe"
+      "artifactName": "RecontechAgenticTool-Setup-${version}.exe"
     },
     "nsis": {
-      "oneClick": true,
-      "perMachine": false
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "installer/installer.nsh",
+      "guid": "f2f54427-a522-50b4-bf4b-3bd976b1dd7d"
     },
     "npmRebuild": false
   }

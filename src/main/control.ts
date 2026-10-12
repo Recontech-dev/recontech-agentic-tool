@@ -20,8 +20,11 @@ export interface Hooks {
   terminals(): TerminalInfo[];
   /** The text currently on a terminal's screen, last `lines` lines. */
   read(name: string, lines: number): Promise<string>;
-  /** Type a message into a terminal as a prompt. */
-  deliver(name: string, text: string): void;
+  /**
+   * Type a message into a terminal as a prompt. "queued" means it waits until the user stops typing
+   * in that terminal.
+   */
+  deliver(name: string, text: string): "sent" | "queued" | void;
   /** True for a terminal kept in a container, which may not read the other terminals' screens. */
   contained?(name: string): boolean;
 }
@@ -121,8 +124,8 @@ export class Control {
         });
       }
       this.sent.set(key, [...recent, Date.now()]);
-      this.hooks.deliver(target.name, `[Message from the "${from}" terminal] ${message.slice(0, 6000)}`);
-      return this.reply(res, 200, { delivered: target.name, remaining: MAX_MESSAGES - recent.length - 1 });
+      const how = this.hooks.deliver(target.name, `[Message from the "${from}" terminal] ${message.slice(0, 6000)}`);
+      return this.reply(res, 200, { delivered: target.name, queued: how === "queued", remaining: MAX_MESSAGES - recent.length - 1 });
     }
     this.reply(res, 404, { error: "unknown" });
   }

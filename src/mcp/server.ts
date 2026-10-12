@@ -19,7 +19,7 @@ const CONTAINED = process.env.ALT_CONTAINED === "1";
 const CONTAINED_TOOLS = new Set(["list_terminals", "message_terminal"]);
 
 const CONTAINED_INSTRUCTIONS =
-  "This session runs in a container inside the Agentic Lazy Tool app: it has its own empty folder and no access to the user's " +
+  "This session runs in a container inside the Recontech Agentic Tool app: it has its own empty folder and no access to the user's " +
   "projects, memory or other terminals' screens. Work only with what the user or another terminal gives you in a message. " +
   "A message from another terminal arrives as a prompt starting with [Message from the \"<name>\" terminal]; do what it asks and " +
   "send your answer back with message_terminal to the terminal it came from. Use list_terminals to see the terminals' names. " +
@@ -27,7 +27,7 @@ const CONTAINED_INSTRUCTIONS =
 
 const INSTRUCTIONS =
   "This server is the user's long-term memory across all their Claude Code sessions and projects, and the link to the other " +
-  "Claude Code terminals open in the same Agentic Lazy Tool window. " +
+  "Claude Code terminals open in the same Recontech Agentic Tool window. " +
   "MEMORY: when you start work in a project, call project_memory once to see what was decided and done before. " +
   "When a decision is made, a fact about the project is learned, or work is left unfinished, save it with remember: " +
   "one short sentence that makes sense on its own. Use recall to look up earlier work, including other projects. " +
@@ -96,7 +96,7 @@ async function control(route: string, body: object): Promise<any> {
   try {
     address = JSON.parse(fs.readFileSync(CONTROL_FILE, "utf8"));
   } catch {
-    throw new Error("Other terminals can only be reached while this session runs inside the Agentic Lazy Tool app.");
+    throw new Error("Other terminals can only be reached while this session runs inside the Recontech Agentic Tool app.");
   }
   let response: Response;
   try {
@@ -107,7 +107,7 @@ async function control(route: string, body: object): Promise<any> {
       signal: AbortSignal.timeout(15_000),
     });
   } catch {
-    throw new Error("The Agentic Lazy Tool app is not answering. Is its window still open?");
+    throw new Error("The Recontech Agentic Tool app is not answering. Is its window still open?");
   }
   const data: any = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `The app refused the request (${response.status}).`);
@@ -146,7 +146,10 @@ async function runTool(name: string, args: any): Promise<string> {
       return `Screen of the "${found}" terminal:\n${text || "(nothing on screen yet)"}`;
     }
     case "message_terminal": {
-      const { delivered, remaining } = await control("/send", { from: SELF, to: args?.to, message: args?.message });
+      const { delivered, queued, remaining } = await control("/send", { from: SELF, to: args?.to, message: args?.message });
+      if (queued) {
+        return `Queued for "${delivered}": the user is typing there, so the message arrives as soon as they send or clear what they are typing. Do not send it again. Its reply arrives here as a new prompt. ${remaining} more messages allowed for now.`;
+      }
       return `Delivered to "${delivered}". It will act on the message and can answer with its own message; its reply arrives here as a new prompt. ${remaining} more messages allowed for now.`;
     }
     default:
@@ -163,7 +166,7 @@ async function handle(message: any): Promise<object | null> {
       return reply({
         protocolVersion: params?.protocolVersion ?? PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "agentic-lazy-tool-brain", version: "0.5.0" },
+        serverInfo: { name: "recontech-agentic-tool-brain", version: "0.5.0" },
         instructions: CONTAINED ? CONTAINED_INSTRUCTIONS + (SELF ? ` This terminal is called "${SELF}".` : "") : INSTRUCTIONS,
       });
     case "ping":

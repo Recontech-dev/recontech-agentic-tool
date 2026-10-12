@@ -1,4 +1,4 @@
-# Agentic Lazy Tool
+# Recontech Agentic Tool
 
 **One window for all your Claude Code work, with a memory that never forgets.**
 
@@ -6,7 +6,7 @@
 
 Every Claude Code session starts from zero. What you decided yesterday, why a bug happened last week, how a project is deployed: it is all in old sessions that the next session cannot see. And if you use more than one Claude Code sign-in, or need to keep working without internet, you juggle several terminals by hand.
 
-Agentic Lazy Tool puts your Claude Code terminals side by side in one window and connects all of them to a shared local **brain**. The brain is built from your past sessions and the notes Claude saves while it works, so every new session can pick up where the last one left off.
+Recontech Agentic Tool puts your Claude Code terminals side by side in one window and connects all of them to a shared local **brain**. The brain is built from your past sessions and the notes Claude saves while it works, so every new session can pick up where the last one left off.
 
 ## Main features
 
@@ -30,13 +30,13 @@ Agentic Lazy Tool puts your Claude Code terminals side by side in one window and
 
 *The screenshot uses made-up demo projects.*
 
-Website: https://erlruben.github.io/agentic-lazy-tool/
+Website: https://erlruben.github.io/recontech-agentic-tool/
 
 ## Install (Windows)
 
 1. Install Claude Code if you do not have it: https://docs.claude.com/en/docs/claude-code
-2. Download `AgenticLazyTool-Setup.exe` from the [latest release](https://github.com/erlruben/agentic-lazy-tool/releases/latest) and run it. It installs for your user only; no admin rights needed.
-3. Open **Agentic Lazy Tool** from the Start menu.
+2. Download `RecontechAgenticTool-Setup.exe` from the [latest release](https://github.com/erlruben/recontech-agentic-tool/releases/latest) and run it. It installs for your user only; no admin rights needed.
+3. Open **Recontech Agentic Tool** from the Start menu.
 
 Windows may show "Windows protected your PC" because the app is new and not code-signed. Click **More info**, then **Run anyway**.
 
@@ -185,28 +185,28 @@ Smart sorting is off until you turn it on with the **Smart sorting** button abov
 
 | Part | Where it lives | What it holds |
 |---|---|---|
-| Past sessions | read from each profile's Claude Code folder, indexed in `~/.agentic-lazy-tool/brain/sessions.json` | title, project folder, dates, your prompts, main topics |
-| Notes | `~/.agentic-lazy-tool/memory/<project>/notes.jsonl` | short facts Claude or you saved with `remember` |
-| Profiles | `~/.agentic-lazy-tool/workspace.json`, sign-ins in `~/.agentic-lazy-tool/profiles/` | which Claude Code sign-ins you use |
-| Smart sorting labels | `~/.agentic-lazy-tool/brain/labels.json`, model in `~/.agentic-lazy-tool/models/` or the folder you chose | each session's kind of work and whether it was finished |
+| Past sessions | read from each profile's Claude Code folder, indexed in `~/.recontech-agentic-tool/brain/sessions.json` | title, project folder, dates, your prompts, main topics |
+| Notes | `~/.recontech-agentic-tool/memory/<project>/notes.jsonl` | short facts Claude or you saved with `remember` |
+| Profiles | `~/.recontech-agentic-tool/workspace.json`, sign-ins in `~/.recontech-agentic-tool/profiles/` | which Claude Code sign-ins you use |
+| Smart sorting labels | `~/.recontech-agentic-tool/brain/labels.json`, model in `~/.recontech-agentic-tool/models/` or the folder you chose | each session's kind of work and whether it was finished |
 
 - Notes and sessions are linked by the words they share, which is how the topics in the graph appear. It is a searchable memory, not a trained neural network.
 - **Search by meaning:** if [Ollama](https://ollama.com/download) is running with the `nomic-embed-text` model (`ollama pull nomic-embed-text`, about 270 MB), search and Claude's `recall` also find things by meaning, so "how do we ship the site" finds the deploy session. It runs on your computer. Without it, search matches words.
 - API keys, tokens and `password=...` values are masked before anything is stored.
 - The brain checks for new sessions every 10 seconds while the app is open.
-- To use the brain in a Claude Code you start yourself, run `claude --mcp-config "%USERPROFILE%\.agentic-lazy-tool\brain\mcp.json"`. The file is written the first time the app starts a terminal.
+- To use the brain in a Claude Code you start yourself, run `claude --mcp-config "%USERPROFILE%\.recontech-agentic-tool\brain\mcp.json"`. The file is written the first time the app starts a terminal.
 
 ## Build from source
 
 Requires Node.js 22 or newer.
 
 ```
-git clone https://github.com/erlruben/agentic-lazy-tool
-cd agentic-lazy-tool
+git clone https://github.com/erlruben/recontech-agentic-tool
+cd recontech-agentic-tool
 npm install
 npm start          # run the app
 npm test           # run the tests
-npm run dist       # build release/AgenticLazyTool-Setup-<version>.exe
+npm run dist       # build release/RecontechAgenticTool-Setup-<version>.exe
 ```
 
 macOS and Linux run from source with `npm start`; only the Windows installer is built automatically.
