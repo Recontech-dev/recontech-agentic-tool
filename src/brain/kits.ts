@@ -137,7 +137,7 @@ export const roleById = (id: string | undefined, custom?: unknown) => allRoles(c
  */
 export function cleanRolePrompt(prompt: string): string {
   return String(prompt ?? "")
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
     // PowerShell reads curly quotes as real ones, so a pasted "don’t" would end the quoted text early.
     .replace(/[‘’‚‛“”„‟]/g, "'")
     .replace(/["`$]/g, "'")

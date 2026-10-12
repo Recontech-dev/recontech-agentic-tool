@@ -153,6 +153,62 @@ test("a custom role with curly quotes stays one argument on the PowerShell comma
   assert.equal(out.stdout.trim(), "5", `claude --append-system-prompt <text> --mcp-config <file>: ${command}`);
 });
 
+test("control characters in a role prompt never reach the typed command line as keystrokes", { skip: process.platform !== "win32" }, async () => {
+  const profile = { id: "a", name: "A", color: "#fff", configDir: null };
+  // A bare name: the shell below starts in root, and a path with spaces would need quotes of its own.
+  const marker = path.join(root, "broke-out.txt");
+  const name = "broke-out.txt";
+  // Ctrl+C (cancel the line), Ctrl+U, Ctrl+V (paste the clipboard), Esc, a fake paste end, the one-byte CSI, line breaks.
+  const tricks = ["\x03", "\x15", "\x16", "\x1b\x1b", "\x1b[201~", "\x9b201~", "\r\n", "\x00", "\x7f"];
+  for (const trick of tricks) {
+    const prompt = `You review code.${trick}New-Item -ItemType File ${name} #`;
+    for (const command of [
+      claudeCommand(profile, "c.json", undefined, false, prompt),
+      claudeCommand(profile, "c.json", undefined, false, standingPrompt("none", "custom-x", [{ id: "custom-x", name: "X", prompt }])),
+    ]) {
+      assert.doesNotMatch(command, /[\x00-\x1f\x7f-\x9f]/, JSON.stringify(trick));
+    }
+  }
+
+  // And typed for real, the way the app starts Claude Code: into a PowerShell in a pseudo-terminal, with a
+  // harmless stand-in for claude. The first line is unprotected, to show this check does catch a break-out.
+  // The pseudo-terminal needs a console, which a test process does not have, so a helper process types.
+  const lines = [`Write-Output 'You review code.\x03New-Item -ItemType File ${name} #'`, ...tricks.map((trick) =>
+    claudeCommand(profile, "c.json", undefined, false, `You review code.${trick}New-Item -ItemType File ${name} #`).replace(/^claude /, "Write-Output "))];
+  const typer = path.join(root, "typer.js");
+  fs.writeFileSync(typer, `
+    const fs = require("fs");
+    const [ptyModule, cwd, marker, linesFile] = process.argv.slice(2);
+    const shell = require(ptyModule).spawn("powershell.exe", ["-NoLogo", "-NoProfile"], { cols: 200, rows: 30, cwd });
+    let screen = "";
+    shell.onData((data) => (screen += data));
+    const until = async (what, ms) => { for (const end = Date.now() + ms; !what() && Date.now() < end;) await new Promise((r) => setTimeout(r, 100)); };
+    (async () => {
+      const brokeOut = [];
+      await until(() => /PS .*>/.test(screen), 30000);
+      // The prompt shows a moment before PowerShell's line editor takes keys; typed earlier, Ctrl+C means something else.
+      await new Promise((r) => setTimeout(r, 2500));
+      for (const [i, line] of JSON.parse(fs.readFileSync(linesFile, "utf8")).entries()) {
+        screen = "";
+        // Spelled apart, so the typed line itself never shows the finished marker.
+        shell.write(line + "; Write-Output ('fini' + 'shed-" + i + "')\\r");
+        await until(() => fs.existsSync(marker) || screen.includes("finished-" + i), 15000);
+        brokeOut.push(fs.existsSync(marker));
+        fs.rmSync(marker, { force: true });
+      }
+      process.stdout.write(JSON.stringify(brokeOut));
+      shell.kill();
+      process.exit(0);
+    })();
+  `);
+  fs.writeFileSync(path.join(root, "lines.json"), JSON.stringify(lines));
+  const { execFileSync } = await import("node:child_process");
+  const out = execFileSync(process.execPath, [typer, path.dirname(require.resolve("node-pty/package.json")), root, marker, path.join(root, "lines.json")], { encoding: "utf8", timeout: 240_000, windowsHide: true });
+  const [unprotected, ...protectedLines] = JSON.parse(out) as boolean[];
+  assert.ok(unprotected, "the unprotected line should have broken out; the checks after it would prove nothing");
+  tricks.forEach((trick, i) => assert.ok(!protectedLines[i], `${JSON.stringify(trick)} ran a command: ${lines[i + 1]}`));
+});
+
 test("the wake word is heard loosely at the start, never in ordinary talk, and the command after it is kept", () => {
   // As Whisper tiny.en writes "Hey Recon", raw or after cleanupTranscript.
   for (const heard of ["hey recon", "Hey Recon.", "Hey, Recon!", "hey reckon", "Hey re-con.", "hey re con", "hey rekon",

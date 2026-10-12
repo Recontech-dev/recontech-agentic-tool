@@ -42,8 +42,12 @@ export const CONTAINED_OFF = ["SendMessage", "ListAgents", "WebSearch", "DesignS
 
 /** The command typed into a profile's terminal to start Claude Code. */
 export function claudeCommand(profile: Profile, mcpConfig: string, resume?: string, contained = false, standing = ""): string {
+  // This line is typed into the shell, so a control character in it is a keystroke: Ctrl+C (\x03)
+  // throws away what was typed so far and the rest runs as its own command. None may get through,
+  // whatever the caller cleaned already (C0, DEL and the C1 range, whose \x9b is a one-byte ESC[).
+  const plain = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]+/g, " ");
   // PowerShell also ends a quoted string at a curly single quote, so those are escaped like ' itself.
-  const quote = process.platform === "win32" ? (s: string) => `'${s.replace(/['‘’‚‛]/g, "''")}'` : (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+  const quote = process.platform === "win32" ? (s: string) => `'${plain(s).replace(/['‘’‚‛]/g, "''")}'` : (s: string) => `'${plain(s).replace(/'/g, `'\\''`)}'`;
   const parts = ["claude"];
   if (profile.kind === "ollama" && profile.model) parts.push("--model", quote(profile.model));
   // The bridge picks the real model; this name only labels the session.
@@ -55,7 +59,7 @@ export function claudeCommand(profile: Profile, mcpConfig: string, resume?: stri
   if (contained) parts.push("--restricted", "--strict-mcp-config", "--disallowedTools", quote(CONTAINED_OFF.join(",")));
   if (resume && /^[\w-]+$/.test(resume)) parts.push("--resume", resume);
   // Standing instructions (project kit and terminal role), kept to one line with plain quotes.
-  const extra = standing.replace(/[\r\n]+/g, " ").replace(/["`$]/g, "").trim();
+  const extra = plain(standing).replace(/["`$]/g, "").replace(/ {2,}/g, " ").trim();
   if (extra) parts.push("--append-system-prompt", quote(extra));
   parts.push("--mcp-config", quote(mcpConfig));
   return parts.join(" ");

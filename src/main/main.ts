@@ -23,6 +23,8 @@ import { newer } from "../brain/version";
 import * as ws from "../brain/workspace";
 import { Control } from "./control";
 import { Inbox } from "./inbox";
+import { PasteMode, bracketedPaste } from "./paste";
+import { VOICE_REPLY_MS, VoiceReplies } from "./voice";
 import { FreeModels } from "./free";
 
 const BRAIN_REFRESH_MS = 10_000;
@@ -112,12 +114,14 @@ const control = new Control({
     return win.webContents.executeJavaScript(`terminalText(${JSON.stringify(profile.id)}, ${Number(lines) || 60})`);
   },
   contained: (name) => ws.isContained(workspace, workspace.profiles.find((p) => p.name === name)),
-  deliver: (name, text) => {
+  deliver: (name, text, from) => {
     const profile = workspace.profiles.find((p) => p.name === name);
     if (!profile || !terminals.has(profile.id)) return "sent";
-    // A reply to a Hey Recon voice request waits for the user to confirm, instead of going straight into the terminal.
-    if (voicePending.delete(profile.id)) {
-      send("voice:reply", profile.id, text.replace(/^\[Message from "[^"]*" terminal[^\]]*\]\s*/, ""));
+    // The Manager's answer to a Hey Recon voice request waits for the user to confirm, instead of going
+    // straight into the terminal; messages from any other terminal are delivered as usual.
+    const reply = voiceReplies.take(profile.id, from, text);
+    if (reply !== null) {
+      send("voice:reply", profile.id, reply);
       return "sent";
     }
     return sendToProfile(profile, text);
@@ -127,15 +131,23 @@ const control = new Control({
 /** Messages from other terminals that wait while the user is typing in the terminal they are for. */
 const inbox = new Inbox();
 const INBOX_CHECK_MS = 500;
-/** Terminals whose next incoming message is a Hey Recon voice reply, held for the user to confirm instead of typed in. */
-const voicePending = new Set<string>();
+/** Terminals waiting for the Manager's answer to a Hey Recon request, held for the user to confirm instead of typed in. */
+const voiceReplies = new VoiceReplies();
+
+/** Whether each terminal's program has bracketed paste on, which Claude Code has and a plain shell has not. */
+const pasteModes = new Map<string, PasteMode>();
+/**
+ * Text goes into a terminal only while Claude Code reads it. After Claude Code exits the terminal is
+ * a plain shell, where a "paste" is typed keys and a message would run as a command.
+ */
+const pasteAllowed = (id: string) => terminals.has(id) && pasteModes.get(id)?.on === true;
 
 /** Type a message from another terminal into a terminal as a prompt. */
 function writeMessage(id: string, text: string): void {
   const term = terminals.get(id);
-  if (!term) return;
+  if (!term || !pasteAllowed(id)) return;
   // Sent as a paste so line breaks stay inside the message, then Enter to submit it.
-  term.write(`\x1b[200~${text.replace(/\x1b/g, "")}\x1b[201~`);
+  term.write(bracketedPaste(text));
   setTimeout(() => terminals.get(id) === term && term.write("\r"), 400);
   send("term:message", id);
 }
@@ -144,7 +156,8 @@ function writeMessage(id: string, text: string): void {
 function sendToProfile(profile: ws.Profile, text: string): "sent" | "queued" {
   if (!terminals.has(profile.id)) return "sent";
   // While the user is typing there, the message waits, and so does any message after it, to keep their order.
-  if (inbox.busy(profile.id) || inbox.waiting(profile.id)) {
+  // It also waits while Claude Code is not running there, until it is started again.
+  if (inbox.busy(profile.id) || inbox.waiting(profile.id) || !pasteAllowed(profile.id)) {
     inbox.hold(profile.id, text);
     send("term:waiting", profile.id, inbox.waiting(profile.id));
     return "queued";
@@ -155,7 +168,8 @@ function sendToProfile(profile: ws.Profile, text: string): "sent" | "queued" {
 
 /** Send the next waiting message to a terminal once it is free, or right away when the user asks. */
 function deliverWaiting(id: string, force = false): void {
-  if (!terminals.has(id)) return;
+  // Not even on request while Claude Code is not running there: the shell would run the message.
+  if (!pasteAllowed(id)) return;
   const text = inbox.next(id, force);
   if (text === undefined) return;
   writeMessage(id, text);
@@ -174,6 +188,7 @@ function send(channel: string, ...args: unknown[]): void {
 function stopTerminal(id: string): void {
   terminals.get(id)?.kill();
   terminals.delete(id);
+  pasteModes.delete(id);
 }
 
 function startTerminal(id: string, options: { folder?: string; resume?: string } = {}): void {
@@ -191,11 +206,17 @@ function startTerminal(id: string, options: { folder?: string; resume?: string }
   const env = profileEnv(profile, process.env, free.connection());
   const term = pty.spawn(shell.file, shell.args, { name: "xterm-256color", cols, rows, cwd: folder, env });
   terminals.set(id, term);
-  term.onData((data) => send("term:data", id, data));
+  const mode = new PasteMode();
+  pasteModes.set(id, mode);
+  term.onData((data) => {
+    mode.feed(data);
+    send("term:data", id, data);
+  });
   term.onExit(() => {
     // A shell replaced by a restart, or closed with its profile, exits later; that is not news for the window.
     if (terminals.get(id) !== term) return;
     terminals.delete(id);
+    pasteModes.delete(id);
     send("term:exit", id);
   });
   // ALT_NO_CLAUDE is for automated checks of the window: the shell opens but Claude Code is not started.
@@ -617,10 +638,11 @@ ipcMain.handle("profile:rename", (_event, id: string, name: string) =>
     return workspace;
   }),
 );
-ipcMain.handle("ui:save", (_event, ui: { fontSize?: number; brainWidth?: number; filesOpen?: boolean }) => {
+ipcMain.handle("ui:save", (_event, ui: { fontSize?: number; brainWidth?: number; filesOpen?: boolean; voiceOn?: boolean }) => {
   if (Number(ui?.fontSize) >= 9 && Number(ui?.fontSize) <= 24) workspace.fontSize = Number(ui.fontSize);
   if (Number(ui?.brainWidth) >= 240 && Number(ui?.brainWidth) <= 1200) workspace.brainWidth = Math.round(Number(ui.brainWidth));
   if (typeof ui?.filesOpen === "boolean") workspace.filesOpen = ui.filesOpen;
+  if (typeof ui?.voiceOn === "boolean") workspace.voiceOn = ui.voiceOn;
   ws.save(workspace);
 });
 // The Files panel. Paths come from the page relative to the project folder, and files.inside()
@@ -715,10 +737,9 @@ ipcMain.handle("voice:ask", (_event, anchorId: string, command: string) => {
   if (!terminals.has(manager.id)) return { error: `${manager.name}'s terminal has not been started.` };
   const text = cleanupTranscript(String(command ?? ""));
   if (!text) return { error: "Didn't catch a request." };
-  voicePending.add(anchor.id);
-  setTimeout(() => voicePending.delete(anchor.id), 5 * 60_000);
-  const how = sendToProfile(manager, `[Message from "${anchor.name}" terminal, heard by voice] ${text} When you have an answer, send it back with message_terminal to "${anchor.name}".`);
-  return { manager: manager.name, queued: how === "queued" };
+  voiceReplies.expect(anchor.id, manager.name);
+  const how = sendToProfile(manager, `[Message from the "${anchor.name}" terminal, heard by voice] ${text} When you have an answer, send it back with message_terminal to "${anchor.name}".`);
+  return { manager: manager.name, queued: how === "queued", waitMs: VOICE_REPLY_MS };
 });
 ipcMain.handle("session:resume", (_event, ref: { profile: string; id: string; folder: string }) => {
   const profile = workspace.profiles.find((p) => p.name === ref?.profile);
@@ -734,6 +755,22 @@ ipcMain.on("term:start", (_event, id: string, cols: number, rows: number) => {
 ipcMain.on("term:input", (_event, id: string, data: string) => {
   inbox.typed(String(id), String(data));
   terminals.get(String(id))?.write(String(data));
+});
+// Text the app pastes for the user to check and send (a voice transcript, a Manager's answer): cleaned
+// of anything that could end the paste early, and on one line when asked, so nothing runs by itself.
+ipcMain.handle("term:paste", (_event, id: string, text: string, oneLine: boolean) => {
+  const target = String(id);
+  if (!terminals.has(target)) return { error: "That terminal is not running." };
+  if (!pasteAllowed(target)) return { error: "Claude Code is not running in that terminal, so nothing was put in: the shell would run it. Start Claude Code there (↻) and try again." };
+  const data = bracketedPaste(String(text ?? ""), oneLine === true);
+  inbox.typed(target, data);
+  terminals.get(target)!.write(data);
+  return { ok: true };
+});
+// While Hey Recon listens, the window keeps full speed when minimized or covered; otherwise it would stop hearing.
+ipcMain.on("voice:listening", (_event, on: boolean) => {
+  if (on !== true) voiceReplies.clear();
+  if (win && !win.isDestroyed()) win.webContents.setBackgroundThrottling(on !== true && !process.env.ALT_SCREENSHOT);
 });
 // The "message waiting" button in a terminal's title bar: the user wants it now, typing or not.
 ipcMain.handle("term:deliver-now", (_event, id: string) => deliverWaiting(String(id), true));

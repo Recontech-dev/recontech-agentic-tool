@@ -50,8 +50,14 @@
   .usagebar { display:flex; gap:10px; align-items:center; padding:2px 8px; font-size:11px; color:var(--dim); background:#0d1015;
               border-top:1px solid var(--line); white-space:nowrap; overflow:hidden; font-variant-numeric:tabular-nums; flex:none; }
   .usagebar[hidden] { display:none; }
-  .usagebar span { overflow:hidden; text-overflow:ellipsis; }
+  .usagebar > span { overflow:hidden; text-overflow:ellipsis; }
   .usagebar .limit { margin-left:auto; flex:none; max-width:55%; }
+  .usagebar .week { flex:none; }
+  /* Narrower terminals drop the window's end time, then switch to the short wordings, rather than cutting words off. */
+  .usagebar { container-type:inline-size; }
+  .usagebar .short { display:none; }
+  @container (max-width:460px) { .usagebar .until { display:none; } }
+  @container (max-width:400px) { .usagebar .long { display:none; } .usagebar .short { display:inline; } }
   .usagebar .limit::before { content:"●"; margin-right:4px; }
   .usagebar .limit.ok::before { color:var(--open); }
   .usagebar .limit.near { color:var(--topic); }
@@ -251,7 +257,7 @@
   <span id="net" hidden title="Claude cannot be reached. Profiles that run on Ollama keep working.">Offline</span>
   <span class="spacer"></span>
   <button id="roles" title="Make and change terminal roles: the standing job each terminal is given when it starts">Roles</button>
-  <button id="voiceToggle" title="Hey Recon: an always-listening local voice assistant. Say &quot;Hey Recon&quot; to send a spoken request to your Manager terminal; its answer waits for you to confirm before it goes into a terminal.">🎙 Hey Recon</button>
+  <button id="voiceToggle" title="Hey Recon, the local voice assistant. While this is lit it listens for &quot;Hey Recon&quot;, with no click needed: say it, then your request, and the request goes to your Manager terminal. Its answer waits for you to confirm before it goes into a terminal. Click to turn listening off or back on; the choice is remembered.">🎙 Hey Recon</button>
   <button id="share" title="Share this project's memory with teammates through a file in the project">Team</button>
   <button id="smaller" class="icon" title="Smaller terminal text">A−</button>
   <button id="bigger" class="icon" title="Larger terminal text">A+</button>

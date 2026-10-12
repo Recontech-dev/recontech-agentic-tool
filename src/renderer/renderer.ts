@@ -2,7 +2,7 @@
 // This file runs in the page, so it uses only browser APIs and window.api from the preload script.
 
 interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama" | "free"; model?: string; role?: string }
-interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number; filesOpen?: boolean }
+interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number; filesOpen?: boolean; voiceOn?: boolean }
 interface GraphNode { id: string; kind: string; label: string; text: string; detail: string; open: boolean;
   color?: string; resume?: { profile: string; id: string; folder: string }; tag?: string; unfinished?: boolean;
   note?: { folder: string; number: number };
@@ -111,8 +111,9 @@ async function transcribeAndInsert(id: string, blob: Blob): Promise<void> {
     if (answer?.error) return toast(answer.error, true);
     const text = String(answer?.text || "");
     if (!text) return toast("Didn't catch any words.");
-    // Pasted (not typed + Enter), so it lands in the input for the user to review and send themselves.
-    api.send("term:input", id, `\x1b[200~${text}\x1b[201~`);
+    // Pasted on one line (not typed + Enter), so it lands in the input for the user to review and send themselves.
+    const pasted = await api.invoke("term:paste", id, text, true);
+    if (pasted?.error) return toast(pasted.error, true);
     select(id);
   } catch {
     toast("Could not transcribe that recording.", true);
@@ -141,13 +142,25 @@ let voiceRecording = false;
 let voiceUtteranceStart = 0;
 let voiceLastLoud = 0;
 let voiceReplyPending: { id: string; text: string } | null = null;
+/** When the current phase gives up: "awake" goes back to listening for the wake word, "sent" stops waiting. */
+let voicePhaseUntil = 0;
+/** No recording starts before this, so the assistant's own voice is not heard as a request. */
+let voiceQuietUntil = 0;
 
 /** Root-mean-square loudness of a frame, 0 (silence) upward; a cheap, fully local stand-in for real VAD. */
 const VOICE_RMS_ON = 0.025;
 const VOICE_RMS_OFF = 0.015;
+/** Silence that ends an utterance. A request gets longer, since people pause while saying what they want. */
 const VOICE_SILENCE_MS = 900;
+const VOICE_REQUEST_SILENCE_MS = 1600;
 const VOICE_MAX_UTTERANCE_MS = 12000;
 const VOICE_MIN_UTTERANCE_MS = 250;
+/** After "Hey Recon" alone, how long it waits for the request before listening for the wake word again. */
+const VOICE_AWAKE_MS = 8000;
+/** Checked on a timer, not animation frames: those stop while the window is minimized or covered. */
+const VOICE_WATCH_MS = 50;
+/** How long after the assistant stops speaking the microphone still ignores sound (echo from the speakers). */
+const VOICE_ECHO_MS = 400;
 
 function voiceLog(text: string): void {
   const log = $("voiceLog");
@@ -159,8 +172,9 @@ function voiceLog(text: string): void {
   while (log.children.length > 12) log.firstChild?.remove();
 }
 
-function voiceSetState(phase: VoicePhase, label: string): void {
+function voiceSetState(phase: VoicePhase, label: string, lastsMs = 0): void {
   voicePhase = phase;
+  voicePhaseUntil = lastsMs ? Date.now() + lastsMs : 0;
   const state = $("voiceState");
   state.textContent = label;
   state.className = phase === "armed" ? "armed" : phase === "awake" || phase === "sent" ? "sent" : "dim";
@@ -175,13 +189,15 @@ function voiceSpeak(text: string): void {
   }
 }
 
-async function voiceStart(): Promise<void> {
-  if (voicePhase !== "idle") return;
+/** Starts listening for "Hey Recon". Returns false when the microphone could not be opened. */
+async function voiceStart(): Promise<boolean> {
+  if (voicePhase !== "idle") return true;
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch {
-    return toast("Could not access the microphone. Check this computer's microphone privacy settings.", true);
+    toast("Hey Recon could not open the microphone. Check this computer's microphone privacy settings, then click Hey Recon.", true);
+    return false;
   }
   voiceStream = stream;
   $("voiceToggle").classList.add("on");
@@ -196,12 +212,16 @@ async function voiceStart(): Promise<void> {
   analyser.fftSize = 1024;
   ctx.createMediaStreamSource(stream).connect(analyser);
   voiceAnalyser = analyser;
-  voiceWatch();
+  api.send("voice:listening", true);
+  voiceWatchTimer = window.setInterval(voiceWatch, VOICE_WATCH_MS);
+  return true;
 }
 
 function voiceStop(): void {
   if (voicePhase === "idle") return;
-  cancelAnimationFrame(voiceWatchTimer);
+  clearInterval(voiceWatchTimer);
+  // Also tells the main process to stop holding the Manager's answer: it now goes to the terminal as usual.
+  api.send("voice:listening", false);
   if (voiceRecorder && voiceRecorder.state !== "inactive") { voiceRecorder.onstop = null; voiceRecorder.stop(); }
   voiceRecorder = null;
   voiceRecording = false;
@@ -226,17 +246,26 @@ function voiceRms(data: Float32Array): number {
 
 function voiceWatch(): void {
   if (voicePhase === "idle" || !voiceAnalyser) return;
+  const now = Date.now();
+  // A phase that has run out: no request after a bare "Hey Recon", or no answer from the Manager.
+  if (voicePhaseUntil && now > voicePhaseUntil && !voiceRecording) {
+    voiceLog(voicePhase === "awake" ? "No request heard." : "No answer from the Manager terminal yet; it will appear there instead.");
+    voiceSetState("armed", "Listening");
+  }
+  // The assistant's own voice through the speakers is not a request (speech synthesis bypasses echo cancelling).
+  let speaking = false;
+  try { speaking = speechSynthesis.speaking; } catch { /* unavailable */ }
+  if (speaking) voiceQuietUntil = now + VOICE_ECHO_MS;
   const data = new Float32Array(voiceAnalyser.fftSize);
   voiceAnalyser.getFloatTimeDomainData(data);
   const rms = voiceRms(data);
-  const now = Date.now();
   if (!voiceRecording) {
-    if (rms > VOICE_RMS_ON && (voicePhase === "armed" || voicePhase === "awake")) voiceBeginUtterance();
+    if (rms > VOICE_RMS_ON && now >= voiceQuietUntil && (voicePhase === "armed" || voicePhase === "awake")) voiceBeginUtterance();
   } else {
     if (rms > VOICE_RMS_OFF) voiceLastLoud = now;
-    if (now - voiceUtteranceStart > VOICE_MAX_UTTERANCE_MS || now - voiceLastLoud > VOICE_SILENCE_MS) voiceEndUtterance();
+    const silence = voicePhase === "awake" ? VOICE_REQUEST_SILENCE_MS : VOICE_SILENCE_MS;
+    if (now - voiceUtteranceStart > VOICE_MAX_UTTERANCE_MS || now - voiceLastLoud > silence) voiceEndUtterance();
   }
-  voiceWatchTimer = requestAnimationFrame(voiceWatch);
 }
 
 function voiceBeginUtterance(): void {
@@ -264,20 +293,23 @@ function voiceEndUtterance(): void {
 }
 
 async function voiceHandleUtterance(blob: Blob): Promise<void> {
-  if (voicePhase !== "armed" && voicePhase !== "awake") return;
+  const phase = voicePhase;
+  if (phase !== "armed" && phase !== "awake") return;
   try {
     const pcm = await toPcm16k(blob);
     const answer = await api.invoke("mic:transcribe", Array.from(pcm));
+    // Transcribing takes a moment: if Hey Recon was turned off or moved on meanwhile, this clip is stale.
+    if (voicePhase !== phase) return;
     const text = String(answer?.text || "");
     if (!text) return;
-    if (voicePhase === "armed") {
+    if (phase === "armed") {
       const wake = await api.invoke("voice:wake", text);
-      if (!wake?.matched) return;
+      if (!wake?.matched || voicePhase !== phase) return;
       voiceAnchorId = active;
       voiceLog('Heard "Hey Recon".');
       if (wake.after) void voiceAskManager(wake.after);
       else {
-        voiceSetState("awake", "Listening for your request");
+        voiceSetState("awake", "Listening for your request", VOICE_AWAKE_MS);
         voiceSpeak("Yes?");
       }
     } else {
@@ -298,10 +330,13 @@ async function voiceAskManager(command: string): Promise<void> {
     voiceSetState("armed", "Listening");
     return;
   }
+  // The renderer gives up when the main process stops holding the answer for confirmation.
+  if (voicePhase === "sent") voicePhaseUntil = Date.now() + (Number(result.waitMs) || 5 * 60_000);
   voiceSpeak(`Asking ${result.manager}.`);
 }
 
 api.on("voice:reply", (id: string, text: string) => {
+  if (voicePhase === "idle") return;
   voiceReplyPending = { id, text };
   $("voiceReplyText").textContent = text;
   $("voiceReply").hidden = false;
@@ -310,13 +345,25 @@ api.on("voice:reply", (id: string, text: string) => {
   voiceSpeak(text);
 });
 
-$("voiceToggle").onclick = () => void (voicePhase === "idle" ? voiceStart() : voiceStop());
-$("voiceClose").onclick = () => voiceStop();
-$("voiceInsert").onclick = () => {
+/** The user's own switch: it is remembered, and Hey Recon starts listening with the app while it is on. */
+async function voiceSwitch(on: boolean): Promise<void> {
+  if (on && !(await voiceStart())) return;
+  if (!on) voiceStop();
+  workspace.voiceOn = on;
+  api.invoke("ui:save", { voiceOn: on });
+}
+$("voiceToggle").onclick = () => void voiceSwitch(voicePhase === "idle");
+$("voiceClose").onclick = () => void voiceSwitch(false);
+$("voiceInsert").onclick = async () => {
   if (!voiceReplyPending) return;
-  // Pasted, not submitted: the user still presses Enter themselves, same as a mic push-to-talk prompt.
-  api.send("term:input", voiceReplyPending.id, `\x1b[200~${voiceReplyPending.text}\x1b[201~`);
-  select(voiceReplyPending.id);
+  const { id, text } = voiceReplyPending;
+  // Pasted on one line, not submitted: the user still presses Enter themselves, same as a push-to-talk
+  // prompt. The main process strips anything in the Manager's text that could end the paste early, and
+  // refuses while Claude Code is not running there; the answer then stays here to insert later.
+  const pasted = await api.invoke("term:paste", id, text, true);
+  if (pasted?.error) return toast(pasted.error, true);
+  if (voiceReplyPending?.id !== id || voiceReplyPending.text !== text) return;
+  select(id);
   voiceReplyPending = null;
   $("voiceReply").hidden = true;
   voiceSetState("armed", "Listening");
@@ -1263,15 +1310,36 @@ function showUsageBars(): void {
       limit = undefined;
     }
     const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    const week = document.createElement("span");
-    week.textContent = `Week ${usage ? shortCount(usage.week.total) : "–"}`;
-    const session = document.createElement("span");
-    session.textContent = usage?.session ? `Session ${shortCount(usage.session.tokens.total)} · until ~${time(usage.session.end)}` : "No session in progress";
-    const status = document.createElement("span");
-    status.className = `limit ${limit?.level ?? "ok"}`;
-    status.textContent = limit
-      ? `${limit.level === "reached" ? (limit.weekly ? "Weekly limit reached" : "Limit reached") : "Near limit"}${limit.resets ? ` · resets ${limit.resets}` : ""}`
-      : "Within limit";
+    // Each part has a long and a short wording; the CSS shows the short one in a narrow terminal
+    // instead of cutting words off (the full figures stay in the tooltip).
+    const part = (className: string, long: string, short: string) => {
+      const span = document.createElement("span");
+      span.className = className;
+      const full = document.createElement("span");
+      full.className = "long";
+      full.textContent = long;
+      const brief = document.createElement("span");
+      brief.className = "short";
+      brief.textContent = short;
+      span.append(full, brief);
+      return span;
+    };
+    const weekText = `Week ${usage ? shortCount(usage.week.total) : "–"}`;
+    const week = part("week", weekText, weekText);
+    const session = usage?.session
+      ? part("session", `Session ${shortCount(usage.session.tokens.total)}`, `Session ${shortCount(usage.session.tokens.total)}`)
+      : part("session", "No session in progress", "No session");
+    if (usage?.session) {
+      const until = document.createElement("span");
+      until.className = "until";
+      until.textContent = ` · until ~${time(usage.session.end)}`;
+      session.append(until);
+    }
+    const status = limit
+      ? part(`limit ${limit.level}`,
+        `${limit.level === "reached" ? (limit.weekly ? "Weekly limit reached" : "Limit reached") : "Near limit"}${limit.resets ? ` · resets ${limit.resets}` : ""}`,
+        `${limit.level === "reached" ? "Limit" : "Near"}${limit.resets ? ` · ${limit.resets}` : ""}`)
+      : part("limit ok", "Within limit", "OK");
     bar.replaceChildren(week, session, status);
     bar.title = (usage
       ? `This week: ${usage.week.total.toLocaleString()} tokens (${usage.week.output.toLocaleString()} output).\n` +
@@ -1958,11 +2026,14 @@ function fileNode(entry: FileEntry, depth: number): HTMLElement {
 }
 
 /** Paste a project file's path into the active terminal, as Claude Code's @ reference, for the user to finish the prompt. */
-function insertPath(relative: string): void {
+async function insertPath(relative: string): Promise<void> {
   if (!active || !running(active)) return toast("Start a terminal first, then put the path into it.", true);
+  const target = active;
   const ref = /\s/.test(relative) ? `@"${relative}" ` : `@${relative} `;
-  api.send("term:input", active, `\x1b[200~${ref}\x1b[201~`);
-  select(active);
+  // A file name can hold almost any character; the paste is cleaned and only goes into Claude Code.
+  const pasted = await api.invoke("term:paste", target, ref, true);
+  if (pasted?.error) return toast(pasted.error, true);
+  select(target);
 }
 
 $("filesToggle").onclick = () => showFiles($("files").hidden);
@@ -2266,6 +2337,8 @@ window.addEventListener("beforeunload", (event) => {
   await refreshAccounts();
   offerFoundFolders();
   showSorting(await api.invoke("sorting:get"));
+  // Hey Recon listens from the start, so saying its name is enough; the header button turns it off.
+  if (workspace.voiceOn !== false) void voiceStart();
   showUsage();
   setInterval(showUsage, USAGE_REFRESH_MS);
   const frame = () => {

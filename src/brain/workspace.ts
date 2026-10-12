@@ -46,6 +46,8 @@ export interface Workspace {
   brainWidth?: number;
   /** Whether the Files panel (the project folder's files) is shown. */
   filesOpen?: boolean;
+  /** Whether Hey Recon listens for its wake word. On unless the user turned it off. */
+  voiceOn?: boolean;
   /**
    * Whether the Free models terminal is kept in a container: its own empty folder, no project files,
    * no memory, no reading of other terminals. On unless the user turns it off.

@@ -2,6 +2,8 @@
 // local Whisper model once and then answers transcription requests sent on stdin, one JSON line
 // each, with the result on stdout. Downloading and inference both stay on this computer.
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as readline from "node:readline";
 
 const MODEL_ID = process.env.WHISPER_MODEL || "onnx-community/whisper-tiny.en";
@@ -18,11 +20,16 @@ async function loadAsr(): Promise<(audio: Float32Array, options?: object) => Pro
   env.cacheDir = process.env.WHISPER_CACHE || ".";
   env.allowLocalModels = false;
   const totals = new Map<string, number>();
+  // The model is downloaded once into the cache folder and read from there afterwards. The library
+  // reports "download" and progress for cached files too, so only files that were not in the cache
+  // when loading began count; otherwise every start would say it is downloading again.
+  const fetching = new Set<string>();
   let lastReport = 0;
   const asr = await pipeline("automatic-speech-recognition", MODEL_ID, {
     dtype: "q8",
     progress_callback: (p: { status: string; file?: string; progress?: number }) => {
-      if (p.status !== "progress" || !p.file || typeof p.progress !== "number") return;
+      if (p.status === "initiate" && p.file && !fs.existsSync(path.join(env.cacheDir, MODEL_ID, p.file))) fetching.add(p.file);
+      if (p.status !== "progress" || !p.file || !fetching.has(p.file) || typeof p.progress !== "number") return;
       totals.set(p.file, p.progress);
       if (Date.now() - lastReport < 500) return;
       lastReport = Date.now();
