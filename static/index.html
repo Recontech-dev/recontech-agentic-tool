@@ -148,7 +148,13 @@
   #filesHint { font-size:11.5px; padding:6px 10px; border-top:1px solid var(--line); }
   #editor { flex:1; min-height:0; display:flex; flex-direction:column; margin:8px; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:#1e1e1e; }
   #editor[hidden] { display:none; }
-  #work.editing #tabs, #work.editing #panels { display:none; }
+  /* An open file sits above the terminals and gets most of the height; the terminals stay in view below. */
+  /* --editor-share is the editor's part of the height, set by dragging the bar between them. */
+  #work.editing #editor { flex:var(--editor-share, 0.6) 1 0; margin-bottom:0; }
+  #work.editing #panels { flex:calc(1 - var(--editor-share, 0.6)) 1 0; }
+  #editorSplit { height:5px; margin:2px 8px 0; cursor:row-resize; background:transparent; flex:none; border-radius:3px; }
+  #editorSplit:hover, #editorSplit.dragging { background:var(--accent); }
+  #editorSplit[hidden] { display:none; }
   #editorBar { display:flex; align-items:center; gap:6px; padding:4px 6px; background:#0d1015; border-bottom:1px solid var(--line); }
   #editorTabs { display:flex; gap:2px; min-width:0; flex:1; overflow-x:auto; scrollbar-width:thin; }
   #editorTabs .tab { display:flex; align-items:center; gap:4px; padding:3px 4px 3px 10px; border-radius:6px 6px 0 0; border:1px solid transparent; color:var(--dim); white-space:nowrap; cursor:pointer; flex:none; }
@@ -310,8 +316,6 @@
     <div id="filesHint" class="dim">Click a file to open it: code and text in the editor, anything else in its own app. Nothing is ever run. ➕ puts its path into the terminal you are using, 📂 shows it in Explorer.</div>
   </section>
   <section id="work">
-    <div id="tabs"></div>
-    <div id="panels"></div>
     <section id="editor" hidden>
       <div id="editorBar">
         <div id="editorTabs" role="tablist" aria-label="Open files"></div>
@@ -319,10 +323,13 @@
         <button id="editorDiff" title="Show what changed in this file since the last commit, for reviewing">Changes</button>
         <button id="editorSave" title="Save (Ctrl+S)">Save</button>
         <button id="editorVscode" title="Open this file in VS Code, if it is installed">VS Code</button>
-        <button id="editorHide" title="Back to the terminals. Open files stay open (Ctrl+Alt+E).">Terminals</button>
+        <button id="editorHide" title="Hide the editor and give the terminals the full height. Open files stay open (Ctrl+Alt+E).">Hide</button>
       </div>
       <div id="editorHost"></div>
     </section>
+    <div id="editorSplit" hidden title="Drag to give the editor or the terminals more room"></div>
+    <div id="tabs"></div>
+    <div id="panels"></div>
   </section>
   <div id="divider" title="Drag to resize"></div>
   <section id="brain">

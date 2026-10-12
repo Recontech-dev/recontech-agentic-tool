@@ -2,7 +2,7 @@
 // This file runs in the page, so it uses only browser APIs and window.api from the preload script.
 
 interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama" | "free"; model?: string; role?: string }
-interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number; filesOpen?: boolean; voiceOn?: boolean; usageBudget?: { session?: number; week?: number } }
+interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number; editorShare?: number; filesOpen?: boolean; voiceOn?: boolean; usageBudget?: { session?: number; week?: number } }
 interface GraphNode { id: string; kind: string; label: string; text: string; detail: string; open: boolean;
   color?: string; resume?: { profile: string; id: string; folder: string }; tag?: string; unfinished?: boolean;
   note?: { folder: string; number: number };
@@ -2114,12 +2114,14 @@ async function openInEditor(relative: string): Promise<boolean> {
 function showEditor(open: boolean): void {
   $("work").classList.toggle("editing", open);
   $("editor").hidden = !open;
+  $("editorSplit").hidden = !open;
   $("editorShow").hidden = open || !openFiles.length;
   $("editorShow").textContent = `Editor (${openFiles.length})`;
-  if (open) (diffing ? diffEditor?.getModifiedEditor() : editor)?.focus();
-  else soon(() => {
+  // The terminals share the height with the editor while it is open, so they are refitted either way.
+  soon(() => {
     fitAll();
-    terms.get(active)?.term.focus();
+    if (open) (diffing ? diffEditor?.getModifiedEditor() : editor)?.focus();
+    else terms.get(active)?.term.focus();
   });
 }
 
@@ -2285,6 +2287,30 @@ $("editorSave").onclick = () => saveFile();
 $("editorDiff").onclick = () => showDiff(!diffing);
 $("editorHide").onclick = () => showEditor(false);
 $("editorShow").onclick = () => showEditor(true);
+
+/** The editor's part of the height it shares with the terminals below it (0.2 to 0.85). */
+function setEditorShare(share: number): void {
+  const limited = Math.max(0.2, Math.min(share, 0.85));
+  $("work").style.setProperty("--editor-share", String(limited));
+  workspace.editorShare = limited;
+}
+$("editorSplit").addEventListener("pointerdown", (event) => {
+  const split = $("editorSplit");
+  split.setPointerCapture(event.pointerId);
+  split.classList.add("dragging");
+  const top = $("editor").getBoundingClientRect().top;
+  const bottom = $("panels").getBoundingClientRect().bottom;
+  const move = (e: PointerEvent) => setEditorShare((e.clientY - top) / (bottom - top));
+  const stop = () => {
+    split.classList.remove("dragging");
+    split.removeEventListener("pointermove", move);
+    split.removeEventListener("pointerup", stop);
+    soon(fitAll);
+    api.invoke("ui:save", { editorShare: workspace.editorShare });
+  };
+  split.addEventListener("pointermove", move);
+  split.addEventListener("pointerup", stop);
+});
 $("editorVscode").onclick = async () => {
   if (!current) return;
   const answer = await api.invoke("files:vscode", current.path);
@@ -2304,6 +2330,7 @@ window.addEventListener("beforeunload", (event) => {
   freeContained = (await api.invoke("free:get")).contained;
   await showKit();
   if (workspace.brainWidth) setBrainWidth(workspace.brainWidth);
+  if (workspace.editorShare) setEditorShare(workspace.editorShare);
   showFontSize();
   showBudget();
   if (workspace.filesOpen) {

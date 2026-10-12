@@ -54,6 +54,8 @@ An **Offline** badge appears in the top bar when Claude cannot be reached; Claud
 
 Buttons: **↻** restarts a terminal, **✕** removes a profile (its sign-in and past sessions stay on disk), **Tabs/Grid** switches the layout, **Hide brain** gives the terminals the whole window.
 
+A file opened from the Files panel shows above the terminals; drag the bar between them to share the height.
+
 ### Roles
 
 A role is the standing job a terminal is given when it starts. Pick one from the role menu in the terminal's title bar. The app adds the role's instructions to Claude Code's system prompt, and every terminal's `list_terminals` shows which role each terminal has, so the terminals know whom to ask for what.

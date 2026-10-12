@@ -44,6 +44,8 @@ export interface Workspace {
   /** Terminal text size and the brain panel's width, as the user left them. */
   fontSize?: number;
   brainWidth?: number;
+  /** The open editor's part of the height it shares with the terminals, from 0.2 to 0.85. */
+  editorShare?: number;
   /** Whether the Files panel (the project folder's files) is shown. */
   filesOpen?: boolean;
   /** Whether Hey Recon listens for its wake word. On unless the user turned it off. */
