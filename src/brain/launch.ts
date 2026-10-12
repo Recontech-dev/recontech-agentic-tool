@@ -42,7 +42,8 @@ export const CONTAINED_OFF = ["SendMessage", "ListAgents", "WebSearch", "DesignS
 
 /** The command typed into a profile's terminal to start Claude Code. */
 export function claudeCommand(profile: Profile, mcpConfig: string, resume?: string, contained = false, standing = ""): string {
-  const quote = process.platform === "win32" ? (s: string) => `'${s.replace(/'/g, "''")}'` : (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+  // PowerShell also ends a quoted string at a curly single quote, so those are escaped like ' itself.
+  const quote = process.platform === "win32" ? (s: string) => `'${s.replace(/['‘’‚‛]/g, "''")}'` : (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const parts = ["claude"];
   if (profile.kind === "ollama" && profile.model) parts.push("--model", quote(profile.model));
   // The bridge picks the real model; this name only labels the session.

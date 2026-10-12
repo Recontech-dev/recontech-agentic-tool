@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { beforeEach, test } from "node:test";
 
 import { Brain } from "../brain/brain";
-import { KITS, ROLES, detectKit, standingPrompt } from "../brain/kits";
+import { KITS, ROLES, cleanRolePrompt, detectKit, standingPrompt } from "../brain/kits";
 import { claudeCommand } from "../brain/launch";
 import * as meaning from "../brain/meaning";
 import { SHARE_FILE, exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
@@ -106,6 +106,51 @@ test("the role manager adds, changes and removes roles of the user's own", () =>
   assert.equal(ws.load().roles?.length, 1);
   assert.equal(standingPrompt("none", docs.id, workspace.roles), "");
   assert.throws(() => ws.removeRole(workspace, "tester"), /cannot be removed/);
+});
+
+test("role manager edge cases: renaming a role in use, removing an assigned role, duplicate names, a hand-edited file", () => {
+  const workspace = ws.load();
+  const docs = ws.saveRole(workspace, { name: "Docs", prompt: "Write docs." });
+  workspace.profiles[0].role = docs.id;
+
+  // Renaming keeps the id, so the terminal keeps the role under its new name and new instructions.
+  ws.saveRole(workspace, { id: docs.id, name: "Docs writer", prompt: "Write good docs." });
+  assert.equal(ws.load().profiles[0].role, docs.id);
+  assert.equal(standingPrompt("none", ws.load().profiles[0].role, ws.load().roles), "Write good docs.");
+  // Changing only the case of its own name is not a clash with itself.
+  assert.equal(ws.saveRole(workspace, { id: docs.id, name: "docs WRITER", prompt: "Write good docs." }).name, "docs WRITER");
+
+  // Duplicate names are refused whatever the case or spacing, against built-in roles too.
+  for (const name of ["  docs   writer ", "MANAGER", "No role", "builder"]) {
+    assert.throws(() => ws.saveRole(workspace, { name, prompt: "x" }), /already used/, name);
+  }
+  assert.throws(() => ws.saveRole(workspace, { id: "custom-gone", name: "Gone", prompt: "x" }), /not in this workspace/);
+  assert.throws(() => ws.saveRole(workspace, { name: "\u0000\t ", prompt: "x" }), /Give the role a name/);
+  assert.throws(() => ws.saveRole(workspace, { name: "Long", prompt: "x".repeat(2001) }), /under 2000/);
+
+  // Removing a role a terminal has (running or not) leaves that terminal with no role from its next start.
+  ws.removeRole(workspace, docs.id);
+  assert.equal(ws.load().profiles[0].role, undefined);
+  assert.equal(standingPrompt("none", docs.id, ws.load().roles), "");
+
+  // A hand-edited workspace.json: bad entries are ignored, never crash, and cannot replace a built-in role.
+  const broken: any = { ...ws.load(), roles: [null, 7, { id: "builder", name: "Fake", prompt: "Do harm." }, { id: "custom-ok", name: "Ok", prompt: 'Say "hi"\u2019; $x' }] };
+  assert.equal(standingPrompt("none", "builder", broken.roles), standingPrompt("none", "builder"));
+  assert.equal(standingPrompt("none", "custom-ok", broken.roles), "Say 'hi''; 'x");
+  assert.equal(standingPrompt("none", "custom-ok", "not a list"), "");
+  ws.saveRole(broken, { name: "Fresh", prompt: "New." });
+  assert.deepEqual(broken.roles.map((r: any) => r.id), ["custom-ok", "custom-fresh"]);
+});
+
+test("a custom role with curly quotes stays one argument on the PowerShell command line", { skip: process.platform !== "win32" }, async () => {
+  const prompt = "Don\u2019t stop\u2018; Write-Output pwned; \u2019 and \u201cquote\u201d it\u2019s fine";
+  const command = claudeCommand({ id: "a", name: "A", color: "#fff", configDir: null }, "c.json", undefined, false, standingPrompt("none", "custom-x", [{ id: "custom-x", name: "X", prompt: cleanRolePrompt(prompt) }]));
+  // PowerShell's own parser says how many pieces the command line has; the role text must be exactly one.
+  const script = `$e=$null;$t=$null;$a=[System.Management.Automation.Language.Parser]::ParseInput([Console]::In.ReadToEnd(),[ref]$t,[ref]$e);` +
+    `if($e.Count){'ERR'}else{$a.EndBlock.Statements[0].PipelineElements[0].CommandElements.Count}`;
+  const { spawnSync } = await import("node:child_process");
+  const out = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { input: command, encoding: "utf8" });
+  assert.equal(out.stdout.trim(), "5", `claude --append-system-prompt <text> --mcp-config <file>: ${command}`);
 });
 
 /** A stand-in for Ollama's embedding endpoint: texts about the same subject get the same direction. */

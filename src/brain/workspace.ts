@@ -229,7 +229,8 @@ export function saveRole(workspace: Workspace, request: { id?: string; name: str
   if (!name) throw new Error("Give the role a name.");
   if (!prompt) throw new Error("Write what a terminal with this role should do.");
   if (prompt.length > MAX_ROLE_PROMPT) throw new Error(`Keep the instructions under ${MAX_ROLE_PROMPT} characters.`);
-  if (allRoles(custom).some((r) => r.id !== id && r.name.toLowerCase() === name.toLowerCase())) throw new Error("That name is already used.");
+  // Compared by object, not id: a new role has no id yet, and neither has the built-in "No role".
+  if (allRoles(custom).some((r) => r !== existing && r.name.toLowerCase() === name.toLowerCase())) throw new Error("That name is already used.");
   if (existing) {
     // The id stays, so terminals that have this role keep it under its new name.
     existing.name = name;

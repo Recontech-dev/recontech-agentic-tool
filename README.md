@@ -17,7 +17,7 @@ Recontech Agentic Tool puts your Claude Code terminals side by side in one windo
 - **Terminals that work together:** ask one terminal's Claude to read another terminal, hand it a task, or discuss an approach with it. For example: "ask the Work terminal to review this change and report back".
 - **Resume anything:** click a past session and press **Resume** to continue it in the right terminal and folder.
 - **Search everything:** find any earlier decision or session across all projects, by words or, with a small local model, by meaning.
-- **Roles:** make one terminal the Builder, another the Reviewer or Tester, and they hand work to each other.
+- **Roles:** make one terminal the Manager, others the Builder, Reviewer or Tester, and they hand work to each other. Make roles of your own in the role manager.
 - **Project kits:** the app recognises website, mobile, Unity and Godot projects and gives Claude the right working rules for each.
 - **Team memory:** write a project's notes to a file in the project so teammates can import them.
 - **Unfinished work list:** what was left unfinished, with one click to resume.
@@ -54,13 +54,27 @@ Buttons: **↻** restarts a terminal, **✕** removes a profile (its sign-in and
 
 ### Roles
 
-Each terminal's title bar has a role menu: **Builder**, **Reviewer** or **Tester**. A role is a standing instruction given to Claude Code when the terminal starts:
+A role is the standing job a terminal is given when it starts. Pick one from the role menu in the terminal's title bar. The app adds the role's instructions to Claude Code's system prompt, and every terminal's `list_terminals` shows which role each terminal has, so the terminals know whom to ask for what.
 
+Built-in roles:
+
+- The **Manager** plans and hands out the work; it does not write code. Tell it what you want: it splits the request into tasks and sends each one to a Builder, Reviewer or Tester terminal with `message_terminal`. It then passes finished work on for review or testing, sends the findings back, and tells you what is done and what is still open.
 - The **Builder** writes the code, then asks a Reviewer or Tester terminal to check it and fixes what they report.
 - The **Reviewer** reads the changes it is asked about and answers with problems and fixes; it does not rewrite the code.
 - The **Tester** runs and writes tests and reports exactly what failed.
 
-A typical setup is Builder in one terminal and Reviewer in another: tell the Builder what to make, and it gets its work reviewed without you carrying messages between them. Changing a role takes effect when that terminal restarts.
+A typical setup is a Manager in one terminal and a Builder and a Reviewer in two others: you talk to the Manager, and the work moves between the terminals without you carrying messages.
+
+**Your own roles.** Click **Roles** in the header, or choose **Manage roles…** at the end of any terminal's role menu, to open the role manager. There you can:
+
+- **New role:** give it a name and write its instructions to Claude Code (up to 2000 characters), for example a Documenter that keeps the docs in step with the code.
+- **Copy as new:** start from a built-in role and change it. Built-in roles themselves cannot be changed or deleted.
+- **Save** changes to a role of your own. Renaming keeps it on the terminals that have it.
+- **Delete** a role of your own. Terminals that had it are left with no role.
+
+Role names must be unique, ignoring case, and cannot repeat a built-in name. Instructions are kept on one line; double quotes, backticks, dollar signs and curly quotes become plain `'`, so the text is always passed to Claude Code safely. Your roles are saved in `workspace.json` in the app's data folder.
+
+A new or changed role takes effect when that terminal restarts (↻); the app tells you which running terminals are affected.
 
 ### Project kits
 
