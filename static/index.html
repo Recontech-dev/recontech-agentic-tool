@@ -19,7 +19,7 @@
   button[hidden] { display:none; }
   input { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 8px; outline:none; }
   input:focus { border-color:var(--accent); }
-  header { display:flex; align-items:center; gap:8px; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); }
   header strong { margin-right:4px; }
   #folder { max-width:420px; overflow:hidden; text-overflow:ellipsis; }
   .spacer { flex:1; }
@@ -37,8 +37,10 @@
   .panel.messaged { border-color:var(--topic); box-shadow:0 0 0 1px var(--topic); }
   .bar { display:flex; align-items:center; gap:8px; padding:4px 8px; background:#0d1015; border-bottom:1px solid var(--line); color:var(--dim); }
   .bar .dot { width:9px; height:9px; border-radius:50%; flex:none; }
-  .bar .name { color:var(--text); font-weight:600; white-space:nowrap; }
-  .bar .hint { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1; }
+  .bar .name { color:var(--text); font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:3em; flex:0 1 auto; }
+  .bar .hint { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; flex:1 1 0; }
+  .bar button, .bar select { flex:none; }
+  .bar .spacer { flex:0 0 0; }
   .term { flex:1; min-height:0; padding:4px 6px; }
   .xterm-viewport::-webkit-scrollbar { width:8px; background:transparent; }
   .xterm-viewport::-webkit-scrollbar-thumb { background:#2f3845; border-radius:4px; }
@@ -88,6 +90,14 @@
   #kit { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 6px; }
   #divider { width:5px; cursor:col-resize; background:transparent; flex:none; }
   #divider:hover, #divider.dragging { background:var(--accent); }
+  #divider[hidden] { display:none; }
+  #results .result.go { cursor:pointer; }
+  #results .result.go:hover { border-color:var(--accent); }
+  #results .result button { margin-top:6px; }
+  #toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%); z-index:30; max-width:min(560px, calc(100% - 32px));
+           background:var(--panel); border:1px solid var(--accent); border-radius:8px; padding:8px 14px; box-shadow:0 4px 16px rgba(0,0,0,.4); }
+  #toast.bad { border-color:#ff7b7b; color:#ff9b9b; }
+  #toast[hidden] { display:none; }
   #todo { margin:0 8px 6px; border:1px solid var(--line); border-radius:6px; max-height:32%; overflow:auto; }
   #todo[hidden] { display:none; }
   #todo summary { padding:6px 8px; cursor:pointer; color:var(--topic); }
@@ -229,6 +239,7 @@
     </div>
   </form>
 </div>
+<div id="toast" role="status" aria-live="polite" hidden></div>
 <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
 <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
 <script src="../dist/renderer/renderer.js"></script>

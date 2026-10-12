@@ -28,6 +28,23 @@ const MODEL_SPACE_BYTES = 2.5 * 1024 ** 3;
 // Screenshots taken for automated checks miss GPU-drawn content, so those runs draw in software.
 if (process.env.ALT_SCREENSHOT) app.disableHardwareAcceleration();
 
+// Electron's single-instance lock is scoped to userData, which by default is NOT under home()/
+// ALT_HOME. Moving it there means two real launches (same home) correctly fight over one lock,
+// while test/screenshot runs that set ALT_HOME to their own temp folder get their own lock and
+// never collide with the real app or with each other.
+app.setPath("userData", path.join(home(), "electron-userdata"));
+// A second launch would share this home's workspace.json and sign-ins, and both instances would
+// write to it, so only one runs; the second hands off to the first and quits.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  process.exit(0);
+}
+app.on("second-instance", () => {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.focus();
+});
+
 const workspace = ws.load();
 const brain = new Brain(() => ws.sources(workspace));
 const terminals = new Map<string, pty.IPty>();
@@ -115,7 +132,9 @@ function startTerminal(id: string, options: { folder?: string; resume?: string }
   terminals.set(id, term);
   term.onData((data) => send("term:data", id, data));
   term.onExit(() => {
-    if (terminals.get(id) === term) terminals.delete(id);
+    // A shell replaced by a restart, or closed with its profile, exits later; that is not news for the window.
+    if (terminals.get(id) !== term) return;
+    terminals.delete(id);
     send("term:exit", id);
   });
   // ALT_NO_CLAUDE is for automated checks of the window: the shell opens but Claude Code is not started.
@@ -290,6 +309,12 @@ function createWindow(): void {
   win.on("closed", () => (win = null));
 }
 
+/** If the workspace file was unreadable and reset at startup, tell the user where the old one went. */
+function showRecoveryNotice(): void {
+  const notice = ws.takeRecoveryNotice();
+  if (notice) dialog.showMessageBox(win!, { type: "warning", title: "Workspace reset", message: notice });
+}
+
 function result<T>(work: () => T): T | { error: string } {
   try {
     return work();
@@ -299,13 +324,16 @@ function result<T>(work: () => T): T | { error: string } {
 }
 
 ipcMain.handle("workspace:get", () => workspace);
-ipcMain.handle("workspace:choose-folder", async () => {
+// Split in two so the restart-every-terminal confirm (asked by the renderer in between) only
+// has to happen once a folder was actually chosen, not before the picker even opens.
+ipcMain.handle("workspace:pick-folder", async () => {
   const choice = await dialog.showOpenDialog(win!, { title: "Choose the project folder", properties: ["openDirectory"], defaultPath: workspace.folder || os.homedir() });
-  if (!choice.canceled && choice.filePaths[0]) {
-    workspace.folder = choice.filePaths[0];
-    ws.save(workspace);
-    pushGraph(true);
-  }
+  return choice.canceled ? null : choice.filePaths[0] || null;
+});
+ipcMain.handle("workspace:set-folder", (_event, folder: string) => {
+  workspace.folder = String(folder);
+  ws.save(workspace);
+  pushGraph(true);
   return workspace;
 });
 ipcMain.handle("workspace:layout", (_event, layout: "grid" | "tabs") => {
@@ -422,7 +450,11 @@ ipcMain.handle("free:save", (_event, entries: { id: string; key?: string; model?
     return workspace;
   }),
 );
-ipcMain.handle("free:test", () => free.test());
+// With entries from the dialog, tests exactly what is on screen without saving it (no side effect);
+// with none, tests the already-saved keys instead.
+ipcMain.handle("free:test", (_event, entries?: { id: string; key?: string; model?: string; baseUrl?: string }[]) =>
+  Array.isArray(entries) ? free.testEntries(entries) : free.test(),
+);
 ipcMain.handle("sorting:get", () => sortingStatus);
 ipcMain.handle("sorting:toggle", () => toggleSorting());
 ipcMain.handle("session:resume", (_event, ref: { profile: string; id: string; folder: string }) => {
@@ -449,6 +481,7 @@ app.whenReady().then(async () => {
   control.writeAddress(controlFile());
   mcpConfigFile();
   createWindow();
+  showRecoveryNotice();
   setInterval(pushGraph, BRAIN_REFRESH_MS);
   checkNetwork();
   setInterval(checkNetwork, NETWORK_CHECK_MS);

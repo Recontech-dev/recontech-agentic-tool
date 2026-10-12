@@ -3,7 +3,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 const INVOKE = [
-  "workspace:get", "workspace:choose-folder", "workspace:layout", "profile:options", "profile:add", "profile:remove",
+  "workspace:get", "workspace:pick-folder", "workspace:set-folder", "workspace:layout", "profile:options", "profile:add", "profile:remove",
   "brain:search", "session:resume", "sorting:get", "sorting:toggle", "folders:unused", "folders:adopt", "folders:dismiss", "profile:accounts", "free:get", "free:save", "free:test",
   "brain:unfinished", "note:add", "note:remove", "share:info", "share:export", "share:import", "kit:get", "kit:set", "profile:role",
   "ui:save", "update:check", "update:open",

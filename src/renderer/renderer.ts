@@ -7,7 +7,7 @@ interface GraphNode { id: string; kind: string; label: string; text: string; det
   color?: string; resume?: { profile: string; id: string; folder: string }; tag?: string; unfinished?: boolean;
   note?: { folder: string; number: number };
   x: number; y: number; vx: number; vy: number }
-interface Match { kind: string; project: string; folder: string; text: string; when: string }
+interface Match { kind: string; project: string; folder: string; text: string; when: string; resume?: { profile: string; id: string; folder: string } }
 
 declare const Terminal: any;
 declare const FitAddon: any;
@@ -18,15 +18,31 @@ declare const api: {
 };
 
 const $ = (id: string) => document.getElementById(id)!;
+
+/** A short message at the bottom of the window that goes away by itself, instead of a dialog to click away. */
+let toastTimer = 0;
+function toast(text: string, bad = false): void {
+  const box = $("toast");
+  box.textContent = text;
+  box.className = bad ? "bad" : "";
+  box.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => (box.hidden = true), bad ? 6000 : 3000);
+}
 let workspace: Workspace;
 let active = "";
 let isOnline = true;
 let accounts: Record<string, string> = {};
 let freeContained = true;
+/** Profiles whose signed-in email is currently shown in full, instead of masked for privacy. */
+const revealedEmails = new Set<string>();
 let roles: { id: string; name: string }[] = [{ id: "", name: "No role" }];
 const terms = new Map<string, { term: any; fit: any; panel: HTMLElement }>();
 /** Profiles whose terminal has been started. A running terminal is never restarted unless the user asks. */
 const started = new Set<string>();
+/** Started terminals whose shell has since closed, so restarting them loses nothing. */
+const exited = new Set<string>();
+const running = (id: string) => started.has(id) && !exited.has(id);
 
 /* ---------- Terminals ---------- */
 
@@ -46,16 +62,30 @@ function makePanel(profile: Profile): void {
   const name = document.createElement("span");
   name.className = "name";
   name.textContent = profile.name;
+  name.title = profile.name;
   const hint = document.createElement("span");
   hint.className = "hint";
   hint.textContent = profile.kind === "ollama" ? `offline · ${profile.model}` : profile.kind === "free" ? "free AI providers" : profile.configDir ? "own sign-in" : "your normal Claude Code sign-in";
+  const eye = document.createElement("button");
+  eye.className = "icon eye";
+  eye.title = "Show this account's email";
+  eye.textContent = "👁";
+  eye.hidden = profile.kind === "ollama" || profile.kind === "free";
+  eye.onclick = () => {
+    if (revealedEmails.has(profile.id)) revealedEmails.delete(profile.id);
+    else revealedEmails.add(profile.id);
+    showNetwork();
+  };
   const spacer = document.createElement("span");
   spacer.className = "spacer";
   const restart = document.createElement("button");
   restart.className = "icon";
   restart.title = "Restart this terminal";
   restart.textContent = "↻";
-  restart.onclick = () => start(profile.id);
+  restart.onclick = () => {
+    if (running(profile.id) && !confirm(`Restart ${profile.name}'s terminal? What is running there now is closed.`)) return;
+    start(profile.id);
+  };
   const remove = document.createElement("button");
   remove.className = "icon remove";
   remove.title = "Remove this profile from the workspace";
@@ -63,7 +93,7 @@ function makePanel(profile: Profile): void {
   remove.onclick = async () => {
     if (!confirm(`Remove ${profile.name}? Its terminal closes. Its sign-in and past sessions stay on disk.`)) return;
     const answer = await api.invoke("profile:remove", profile.id);
-    if (answer.error) return alert(answer.error);
+    if (answer.error) return toast(answer.error, true);
     workspace = answer;
     render();
   };
@@ -78,7 +108,7 @@ function makePanel(profile: Profile): void {
     workspace = await api.invoke("profile:role", profile.id, role.value);
     if (started.has(profile.id) && confirm(`${profile.name} gets its new role when its terminal restarts. Restart it now? What is running there is closed.`)) start(profile.id);
   };
-  bar.append(dot, name, hint, spacer, role, restart, remove);
+  bar.append(dot, name, hint, eye, spacer, role, restart, remove);
   const body = document.createElement("div");
   body.className = "term";
   panel.append(bar, body);
@@ -89,8 +119,8 @@ function makePanel(profile: Profile): void {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(body);
-  // Ctrl+Alt+1..6 and Ctrl+Alt+B belong to the app (switch terminal, show or hide the brain), not to the terminal.
-  term.attachCustomKeyEventHandler((event: KeyboardEvent) => !(event.ctrlKey && event.altKey && /^[1-6b]$/i.test(event.key)));
+  // Ctrl+Alt+1..6, Ctrl+Alt+B and Ctrl+Alt+0 (text size back to normal) belong to the app (switch terminal, show or hide the brain), not to the terminal.
+  term.attachCustomKeyEventHandler((event: KeyboardEvent) => !(event.ctrlKey && event.altKey && /^[0-6b]$/i.test(event.key)));
   term.onData((data: string) => api.send("term:input", profile.id, data));
   term.onResize(({ cols, rows }: { cols: number; rows: number }) => api.send("term:resize", profile.id, cols, rows));
   panel.addEventListener("mousedown", () => select(profile.id));
@@ -144,6 +174,7 @@ function start(id: string): void {
   if (!entry) return;
   entry.panel.querySelector(".cover")?.remove();
   started.add(id);
+  exited.delete(id);
   entry.term.reset();
   fitAll();
   api.send("term:start", id, entry.term.cols, entry.term.rows);
@@ -381,21 +412,16 @@ function freeEntries(): { id: string; key?: string; model: string; baseUrl?: str
 
 $("free").onclick = () => openFreeDialog();
 $("freeCancel").onclick = () => ($("freeDialog").hidden = true);
+// Tests exactly what is in the form, without saving it: testing keys must have no side effect.
 $("freeTest").onclick = async () => {
   $("freeError").textContent = "";
-  const saved = await api.invoke("free:save", freeEntries(), ($("contained") as HTMLInputElement).checked);
-  if (saved.error && !/at least one/.test(saved.error)) return void ($("freeError").textContent = saved.error);
   for (const box of document.querySelectorAll<HTMLElement>("#providers .outcome")) box.textContent = "Testing...";
-  const results: Record<string, string> = await api.invoke("free:test");
+  const results: Record<string, string> = await api.invoke("free:test", freeEntries());
   for (const box of document.querySelectorAll<HTMLElement>("#providers .provider")) {
     const line = box.querySelector(".outcome") as HTMLElement;
     const outcome = results[box.dataset.id!];
     line.textContent = outcome ?? "No key entered.";
     line.className = "outcome " + (outcome === "working" ? "good" : outcome ? "bad" : "dim");
-  }
-  if (!saved.error) {
-    workspace = saved;
-    render();
   }
 };
 $("freeForm").onsubmit = async (event) => {
@@ -410,23 +436,37 @@ $("freeForm").onsubmit = async (event) => {
   showFreeHint();
   const free = workspace.profiles.find((p) => p.kind === "free");
   if (free && before !== freeContained && started.has(free.id)) {
-    alert("The container setting changed. Restart the free terminal (↻) for it to take effect.");
+    toast("The container setting changed. Restart the free terminal (↻) for it to take effect.");
   }
 };
+/** Hides most of an email so it can be shown on screen without exposing it, e.g. "e••••@gmail.com". */
+function maskEmail(email: string): string {
+  const at = email.indexOf("@");
+  if (at < 1) return "•".repeat(email.length);
+  return email[0] + "••••" + email.slice(at);
+}
 /** Each Claude profile's title bar says which account it is signed in with, and warns about duplicates. */
 function showNetwork(): void {
   $("net").hidden = isOnline;
   for (const profile of workspace?.profiles ?? []) {
-    const hint = terms.get(profile.id)?.panel.querySelector(".hint") as HTMLElement | null;
+    const panel = terms.get(profile.id)?.panel;
+    const hint = panel?.querySelector(".hint") as HTMLElement | null;
     if (!hint || profile.kind === "ollama" || profile.kind === "free") continue;
     const email = accounts[profile.id];
     const twin = email ? workspace.profiles.find((p) => p.id !== profile.id && accounts[p.id] === email) : undefined;
     hint.classList.toggle("warn", !isOnline || !!twin);
-    hint.textContent =
-      (email ? email : "not signed in yet") + (twin ? ` · same account as ${twin.name}` : "") + (isOnline ? "" : " · needs internet");
+    const revealed = revealedEmails.has(profile.id);
+    const shown = email ? (revealed ? email : maskEmail(email)) : "not signed in yet";
+    hint.textContent = shown + (twin ? ` · same account as ${twin.name}` : "") + (isOnline ? "" : " · needs internet");
     hint.title = twin
       ? "Both profiles use the same Claude account. To change this one: type /logout, then /login, and approve in a private browser window signed in to the other account."
       : "";
+    const eye = panel?.querySelector(".eye") as HTMLButtonElement | null;
+    if (eye) {
+      eye.hidden = !email;
+      eye.textContent = revealed ? "🙈" : "👁";
+      eye.title = revealed ? "Hide this account's email" : "Show this account's email";
+    }
   }
 }
 async function refreshAccounts(): Promise<void> {
@@ -440,17 +480,23 @@ api.on("net:status", (online: boolean) => {
   showNetwork();
 });
 
-api.on("term:exit", (id: string) => terms.get(id)?.term.write("\r\n\x1b[90m[The terminal closed. Press ↻ to start it again.]\x1b[0m\r\n"));
+api.on("term:exit", (id: string) => exited.add(id) && terms.get(id)?.term.write("\r\n\x1b[90m[The terminal closed. Press ↻ to start it again.]\x1b[0m\r\n"));
 
 $("folder").onclick = async () => {
   const before = workspace.folder;
+  // Picked first, so a user who cancels the native picker is never asked to confirm a restart first.
+  const folder: string | null = await api.invoke("workspace:pick-folder");
+  if (!folder || folder === before) return;
   if (started.size && !confirm("Changing the project folder restarts every terminal in the new folder. Running Claude Code sessions are closed; you can resume them later from the brain. Continue?")) return;
-  workspace = await api.invoke("workspace:choose-folder");
-  if (workspace.folder === before) return;
-  // The one case where every terminal restarts, because each must move to the new folder.
+  // The free terminal is never auto-started by render() below, so if it was already running it
+  // must be restarted by hand too, or it would keep working in the folder it had before.
+  const free = workspace.profiles.find((p) => p.kind === "free");
+  const freeWasRunning = !!free && started.has(free.id);
+  workspace = await api.invoke("workspace:set-folder", folder);
   started.clear();
   await showKit();
   render();
+  if (freeWasRunning) start(free!.id);
   offerSharedNotes();
 };
 $("layout").onclick = async () => {
@@ -462,6 +508,7 @@ $("layout").onclick = async () => {
 $("toggle").onclick = () => {
   const brain = $("brain");
   brain.hidden = !brain.hidden;
+  $("divider").hidden = brain.hidden;
   $("toggle").textContent = brain.hidden ? "Show brain" : "Hide brain";
   soon(() => { fitAll(); resizeMap(); });
 };
@@ -513,19 +560,33 @@ $("profileForm").onsubmit = async (event) => {
 let resizeTimer = 0;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = window.setTimeout(() => { fitAll(); resizeMap(); }, 120);
+  resizeTimer = window.setTimeout(() => {
+    // A brain width saved in a wider window must still leave room for the terminals.
+    if (workspace?.brainWidth) setBrainWidth(workspace.brainWidth);
+    fitAll();
+    resizeMap();
+  }, 120);
 });
 
 /* ---------- Comfort: text size, panel width, shortcuts ---------- */
 
+const DEFAULT_FONT_SIZE = 13;
+/** The A− and A+ buttons say what the text size is now. */
+function showFontSize(): void {
+  const size = workspace.fontSize ?? DEFAULT_FONT_SIZE;
+  $("smaller").title = `Smaller terminal text (now ${size}px). Ctrl+Alt+0 goes back to ${DEFAULT_FONT_SIZE}px.`;
+  $("bigger").title = `Larger terminal text (now ${size}px). Ctrl+Alt+0 goes back to ${DEFAULT_FONT_SIZE}px.`;
+}
 function setFontSize(size: number): void {
   workspace.fontSize = Math.max(9, Math.min(24, size));
   for (const { term } of terms.values()) term.options.fontSize = workspace.fontSize;
   soon(fitAll);
+  showFontSize();
+  toast(`Terminal text size: ${workspace.fontSize}px`);
   api.invoke("ui:save", { fontSize: workspace.fontSize });
 }
-$("smaller").onclick = () => setFontSize((workspace.fontSize ?? 13) - 1);
-$("bigger").onclick = () => setFontSize((workspace.fontSize ?? 13) + 1);
+$("smaller").onclick = () => setFontSize((workspace.fontSize ?? DEFAULT_FONT_SIZE) - 1);
+$("bigger").onclick = () => setFontSize((workspace.fontSize ?? DEFAULT_FONT_SIZE) + 1);
 
 function setBrainWidth(width: number): void {
   const limited = Math.max(260, Math.min(width, window.innerWidth - 320));
@@ -559,7 +620,27 @@ window.addEventListener("keydown", (event) => {
   } else if (event.key.toLowerCase() === "b") {
     $("toggle").click();
     event.preventDefault();
+  } else if (event.key === "0") {
+    setFontSize(DEFAULT_FONT_SIZE);
+    event.preventDefault();
   }
+}, true);
+
+/* ---------- Dialogs: Esc or a click outside closes them ---------- */
+
+const DIALOGS = ["dialog", "freeDialog", "shareDialog"];
+for (const id of DIALOGS) {
+  $(id).addEventListener("mousedown", (event) => {
+    if (event.target === $(id)) $(id).hidden = true;
+  });
+}
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  const open = DIALOGS.map($).filter((d) => !d.hidden);
+  if (!open.length) return;
+  for (const dialog of open) dialog.hidden = true;
+  event.preventDefault();
+  terms.get(active)?.term.focus();
 }, true);
 
 /* ---------- Project kit ---------- */
@@ -576,7 +657,7 @@ async function showKit(): Promise<void> {
 }
 $("kit").addEventListener("change", async () => {
   workspace = await api.invoke("kit:set", ($("kit") as HTMLSelectElement).value);
-  if (started.size) alert("The new kit applies to terminals when they start. Restart a terminal (↻) to use it there.");
+  if (started.size) toast("The new kit applies to terminals when they start. Restart a terminal (↻) to use it there.");
 });
 
 /* ---------- Team memory ---------- */
@@ -605,13 +686,13 @@ $("share").onclick = async () => {
 $("shareClose").onclick = () => ($("shareDialog").hidden = true);
 $("shareExport").onclick = async () => {
   const answer = await api.invoke("share:export");
-  if (answer.error) return alert(answer.error);
+  if (answer.error) return toast(answer.error, true);
   await showShareInfo();
   $("shareInfo").textContent = `Wrote ${answer.notes} notes to .alt-brain.json in the project folder. Commit it with the project to share it.`;
 };
 const importShared = async () => {
   const answer = await api.invoke("share:import");
-  if (answer.error) return alert(answer.error);
+  if (answer.error) return toast(answer.error, true);
   $("shared").hidden = true;
   await showShareInfo();
   $("shareInfo").textContent = `Imported ${answer.added} note${answer.added === 1 ? "" : "s"} into your brain.`;
@@ -625,8 +706,9 @@ $("sharedClose").onclick = () => ($("shared").hidden = true);
 $("noteAdd").onclick = async () => {
   const input = $("noteText") as HTMLInputElement;
   const answer = await api.invoke("note:add", input.value);
-  if (answer.error) return alert(answer.error);
+  if (answer.error) return toast(answer.error, true);
   input.value = "";
+  toast("Note added to this project's memory.");
 };
 $("noteText").addEventListener("keydown", (event) => {
   if (event.key === "Enter") $("noteAdd").click();
@@ -648,16 +730,22 @@ async function showUnfinished(): Promise<void> {
     what.title = `${item.title} · ${item.type} · ${item.profile} · ${item.ended.slice(0, 10)}`;
     const go = document.createElement("button");
     go.textContent = "Resume";
-    go.onclick = async () => {
-      const target = workspace.profiles.find((p) => p.name === item.profile);
-      if (target && started.has(target.id) && !confirm(`Resuming restarts ${item.profile}'s terminal. What is running there now is closed. Continue?`)) return;
-      const answer = await api.invoke("session:resume", { profile: item.profile, id: item.id, folder: item.folder });
-      if (answer.error) return alert(answer.error);
-      select(answer.id);
-    };
+    go.onclick = () => resumeSession({ profile: item.profile, id: item.id, folder: item.folder });
     row.append(what, go);
     list.append(row);
   }
+}
+
+/** Continue a past session in the profile it ran in. That profile's terminal restarts for it. */
+async function resumeSession(ref: { profile: string; id: string; folder: string }): Promise<void> {
+  const target = workspace.profiles.find((p) => p.name === ref.profile);
+  if (target && running(target.id) && !confirm(`Resuming restarts ${ref.profile}'s terminal. What is running there now is closed. Continue?`)) return;
+  const answer = await api.invoke("session:resume", ref);
+  if (answer.error) return toast(answer.error, true);
+  terms.get(answer.id)?.panel.querySelector(".cover")?.remove();
+  started.add(answer.id);
+  exited.delete(answer.id);
+  select(answer.id);
 }
 
 /* ---------- Updates ---------- */
@@ -703,14 +791,18 @@ $("sorting").onclick = async () => {
 /* ---------- Brain search ---------- */
 
 let searchTimer = 0;
+/** Counts searches, so an answer that arrives after a newer search was started is dropped. */
+let searchNumber = 0;
 $("search").addEventListener("input", () => {
   clearTimeout(searchTimer);
+  const number = ++searchNumber;
   searchTimer = window.setTimeout(async () => {
     const query = ($("search") as HTMLInputElement).value.trim();
     const results = $("results");
-    results.textContent = "";
-    if (!query) return;
+    if (!query) return void (results.textContent = "");
     const { matches, byMeaning }: { matches: Match[]; byMeaning: boolean } = await api.invoke("brain:search", query);
+    if (number !== searchNumber) return;
+    results.textContent = "";
     if (!matches.length) {
       results.innerHTML = '<div class="result dim">Nothing matches.</div>';
       return;
@@ -730,6 +822,27 @@ $("search").addEventListener("input", () => {
       const text = document.createElement("div");
       text.textContent = match.text;
       item.append(meta, text);
+      if (match.resume) {
+        // A session: clicking it picks it out in the picture; the button continues it.
+        const ref = match.resume;
+        const node = nodes.find((n) => n.id === `s:${ref.profile}:${ref.id}`);
+        if (node) {
+          item.classList.add("go");
+          item.title = "Show it in the picture";
+          item.onclick = () => {
+            selected = node;
+            show(node);
+            wake();
+          };
+        }
+        const go = document.createElement("button");
+        go.textContent = `Resume in ${ref.profile}`;
+        go.onclick = (event) => {
+          event.stopPropagation();
+          resumeSession(ref);
+        };
+        item.append(go);
+      }
       results.append(item);
     }
   }, 200);
@@ -973,13 +1086,7 @@ function show(n: GraphNode | null): void {
     const button = document.createElement("button");
     button.id = "resume";
     button.textContent = `Resume in ${ref.profile}`;
-    button.onclick = async () => {
-      const target = workspace.profiles.find((p) => p.name === ref.profile);
-      if (target && started.has(target.id) && !confirm(`Resuming restarts ${ref.profile}'s terminal. What is running there now is closed. Continue?`)) return;
-      const answer = await api.invoke("session:resume", ref);
-      if (answer.error) return alert(answer.error);
-      select(answer.id);
-    };
+    button.onclick = () => resumeSession(ref);
     detail.append(button);
   }
 }
@@ -1064,6 +1171,7 @@ new ResizeObserver(() => resizeMap()).observe(canvas);
   freeContained = (await api.invoke("free:get")).contained;
   await showKit();
   if (workspace.brainWidth) setBrainWidth(workspace.brainWidth);
+  showFontSize();
   render();
   offerSharedNotes();
   showUnfinished();

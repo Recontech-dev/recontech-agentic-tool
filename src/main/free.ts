@@ -126,10 +126,41 @@ export class FreeModels {
     writeJson(settingsFile(), this.settings);
   }
 
+  /**
+   * Providers built from what the dialog is showing right now, without saving anything: an empty
+   * key or model from an entry means "use the saved one", same as save() treats undefined.
+   */
+  private providersFromEntries(entries: { id: string; key?: string; model?: string; baseUrl?: string }[]): Provider[] {
+    const byId = new Map(entries.map((e) => [e.id, e]));
+    const list: Provider[] = Object.entries(PRESETS).map(([id, preset]) => {
+      const entry = byId.get(id);
+      const key = entry?.key?.trim() || this.keys[id] || "";
+      const model = entry?.model?.trim() || this.settings.models[id] || preset.model;
+      return { id, name: preset.name, baseUrl: preset.baseUrl, maxOutput: preset.maxOutput, strictSchema: preset.strictSchema, extraBody: preset.extraBody, model, key };
+    });
+    const custom = byId.get(CUSTOM_ID);
+    const baseUrl = custom?.baseUrl?.trim().replace(/\/$/, "") || this.settings.custom?.baseUrl;
+    const model = custom?.model?.trim() || this.settings.custom?.model;
+    if (baseUrl && model) {
+      const key = custom?.key?.trim() || this.keys[CUSTOM_ID] || "none";
+      list.push({ id: CUSTOM_ID, name: "Your own provider", baseUrl, model, maxOutput: 8192, key });
+    }
+    return list;
+  }
+
+  /** Test the dialog's current entries without saving them, so "Test keys" has no side effect. */
+  async testEntries(entries: { id: string; key?: string; model?: string; baseUrl?: string }[]): Promise<Record<string, string>> {
+    return this.runTests(this.providersFromEntries(entries).filter((p) => p.key));
+  }
+
   /** Send one tiny request to each provider that has a key, to check the key and the model name. */
   async test(): Promise<Record<string, string>> {
+    return this.runTests(this.providers().filter((p) => p.key));
+  }
+
+  private async runTests(providers: Provider[]): Promise<Record<string, string>> {
     const results: Record<string, string> = {};
-    await Promise.all(this.providers().filter((p) => p.key).map(async (p) => {
+    await Promise.all(providers.map(async (p) => {
       try {
         const response = await fetch(`${p.baseUrl}/chat/completions`, {
           method: "POST",

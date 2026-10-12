@@ -35,6 +35,8 @@ export interface Match {
   folder: string;
   text: string;
   when: string;
+  /** For sessions: what is needed to resume it. */
+  resume?: { profile: string; id: string; folder: string };
 }
 
 const SESSIONS_PER_PROJECT = 12;
@@ -74,6 +76,7 @@ export class Brain {
           kind: "session", project: path.basename(session.folder), folder: session.folder,
           text: `${this.describeLabels(session)}${session.title}. You asked: ${session.prompts.slice(0, 3).join(" / ")}`,
           when: session.ended.slice(0, 16).replace("T", " "),
+          resume: { profile: session.profile, id: session.id, folder: session.folder },
         }]);
       }
     }
@@ -97,6 +100,7 @@ export class Brain {
       candidates.push({
         kind: "session", project: path.basename(session.folder), folder: session.folder,
         text: this.describeLabels(session) + subject, when: session.ended.slice(0, 16).replace("T", " "),
+        resume: { profile: session.profile, id: session.id, folder: session.folder },
       });
       subjects.push(subject);
     }

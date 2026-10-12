@@ -102,13 +102,32 @@ export function dismissFolders(workspace: Workspace): void {
   save(workspace);
 }
 
+/** Set by load() when workspace.json existed but could not be read, so the caller can tell the user. */
+let recoveryNotice: string | null = null;
+/** The notice from the last load(), if any; reading it clears it so it is shown only once. */
+export function takeRecoveryNotice(): string | null {
+  const notice = recoveryNotice;
+  recoveryNotice = null;
+  return notice;
+}
+
 export function load(): Workspace {
+  const file = workspaceFile();
   try {
-    const data = JSON.parse(fs.readFileSync(workspaceFile(), "utf8"));
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
     if (Array.isArray(data.profiles) && data.profiles.length) return { layout: "grid", ...data };
-  } catch {
-    // First start, or an unreadable file: begin with the normal Claude Code sign-in,
-    // plus any signed-in Claude Code folders already on this computer.
+  } catch (error) {
+    // A missing file is just a first start. A file that exists but fails to parse, or has no
+    // profiles, is moved aside instead of silently replaced, since the next save would erase it.
+    if (fs.existsSync(file)) {
+      const backup = `${file}.bad-${Date.now()}`;
+      try {
+        fs.renameSync(file, backup);
+        recoveryNotice = `Your workspace file could not be read (${(error as Error).message}). It was saved as ${backup} and the workspace was reset to defaults.`;
+      } catch {
+        // Could not even move it aside; fall through to defaults without a notice.
+      }
+    }
   }
   const profiles: Profile[] = [{ id: "default", name: "Main", color: COLORS[0], configDir: null, kind: "claude" }];
   for (const folder of existingClaudeFolders().slice(0, MAX_PROFILES - 1)) {
