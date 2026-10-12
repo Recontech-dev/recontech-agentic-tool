@@ -78,3 +78,53 @@ export function speakable(text: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+/**
+ * "Open the Ecoshift project", "switch to AI Terminal", "go to the NewFields folder": the project name
+ * asked for, or "" for "open a project" with no name (the folder picker). null when it is not such a
+ * request. `explicit` says the user said "project" or "folder", so a name that matches nothing is
+ * worth telling them about; otherwise ("open the readme") it is a request for the Manager instead.
+ */
+export function openProjectRequest(transcript: string): { name: string; explicit: boolean } | null {
+  const text = String(transcript ?? "").replace(/[^\w\s'.-]/g, " ").replace(/\s+/g, " ").trim().replace(/[.\s]+$/, "");
+  if (!text || text.split(" ").length > MAX_COMMAND_WORDS) return null;
+  const match = /^(?:(?:please|can you|could you)\s+)?(?:open(?:\s+up)?|switch\s+to|go\s+to|load|work\s+(?:on|in))\s+(?:(?:the|my|a|an|another|other)\s+)?(.*?)(?:\s+(project|folder|repo|repository))?(?:\s+(?:folder|please))?$/i.exec(text);
+  if (!match) return null;
+  const name = match[1].replace(/^(?:project|folder)\s+/i, "").trim();
+  const explicit = !!match[2] || /^(?:project|folder)\b/i.test(match[1]);
+  if (/^(?:project|folder|new|different)?$/i.test(name)) return explicit || !name ? { name: "", explicit: true } : null;
+  return { name, explicit };
+}
+
+/** Lower case, letters and digits only: "A.I. Terminal" and "ai-terminal" read the same. */
+const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+function editDistance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length];
+}
+
+/**
+ * The known project folder a spoken name means, matched on the folder's own name the way speech
+ * recognition tends to write it: spacing and punctuation ignored, small mishearings forgiven.
+ */
+export function matchProject(spoken: string, folders: string[]): string | null {
+  const want = squash(spoken);
+  if (!want) return null;
+  const named = folders.map((folder) => ({ folder, name: squash(folder.split(/[\/]+/).filter(Boolean).pop() ?? "") })).filter((f) => f.name);
+  const exact = named.find((f) => f.name === want);
+  if (exact) return exact.folder;
+  const partial = named.filter((f) => want.length >= 3 && (f.name.startsWith(want) || f.name.includes(want)));
+  if (partial.length === 1) return partial[0].folder;
+  let best: { folder: string; score: number } | null = null;
+  for (const f of named) {
+    const score = 1 - editDistance(want, f.name) / Math.max(want.length, f.name.length);
+    if (score >= 0.75 && (!best || score > best.score)) best = { folder: f.folder, score };
+  }
+  return best?.folder ?? null;
+}

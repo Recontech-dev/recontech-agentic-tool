@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css">
 <style>
   :root { --bg:#12161c; --panel:#1a2029; --text:#dfe4ec; --dim:#8b96a6; --line:#2f3845; --accent:#6ea0ff;
-          --project:#6ea0ff; --note:#5d6878; --session:#a98bf0; --open:#3ad193; --topic:#f0b354; }
+          --project:#6ea0ff; --note:#5d6878; --session:#a98bf0; --open:#3ad193; --topic:#f0b354; --recon:#4fd8ff; }
   * { box-sizing:border-box; }
   html, body { height:100%; margin:0; }
   body { background:var(--bg); color:var(--text); font:13px/1.45 system-ui, sans-serif; display:flex; flex-direction:column; overflow:hidden; }
@@ -274,25 +274,38 @@
     .usage-tile .value { font-size:14px; line-height:1.2; }
     #usage summary { padding:4px 8px; }
   }
-  #voice { margin:8px; border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:flex; flex-direction:column; gap:6px; max-height:38%; flex:0 1 auto; min-height:64px; overflow:auto; }
+  /* Recon: a HUD-style card, the orb in the middle and the conversation under it. */
+  /* It sticks to the bottom of the brain column, so it stays in view however full the column above it is. */
+  #voice { margin:8px; border:1px solid var(--line); border-radius:10px; padding:8px 10px 10px; display:flex; flex-direction:column; gap:6px;
+           flex:none; max-height:50%; overflow:auto; position:sticky; bottom:8px; z-index:2; box-shadow:0 -6px 18px rgba(0,0,0,.35);
+           background:radial-gradient(ellipse at 50% 28%, rgba(79,216,255,.08), transparent 65%), var(--panel); }
   #voice[hidden] { display:none; }
+  #voice.talk { border-color:rgba(110,160,255,.45); }
   #voiceHead { display:flex; align-items:center; gap:8px; }
-  #voiceState { font-size:11.5px; border:0; padding:0 2px; }
+  #voiceHead b { font-size:11px; letter-spacing:.22em; color:var(--dim); font-weight:600; }
+  #voiceStage { display:flex; flex-direction:column; align-items:center; gap:0; margin-top:-6px; }
+  #voiceOrb { width:140px; height:140px; display:block; cursor:pointer; }
+  #voiceState { font-size:11.5px; border:0; padding:0 4px; letter-spacing:.04em; }
   #voiceState.armed { color:var(--open); }
   #voiceState.talk { color:var(--accent); font-weight:600; }
-  #voiceState.talk::before { content:"●"; margin-right:4px; animation:voicePulse 1.2s ease-in-out infinite; }
-  @keyframes voicePulse { 50% { opacity:.25; } }
-  /* In a conversation the top bar button pulses too, so it is clear the mic is taking everything in. */
+  /* In a conversation the top bar button is lit too, so it is clear the mic is taking everything in. */
   #voiceToggle.talking { background:rgba(110,160,255,.14); }
-  #voiceLog .answer { color:var(--accent); }
-  #voiceLog { font-size:12.5px; display:flex; flex-direction:column; gap:4px; overflow:auto; max-height:120px; }
+  #voiceLog { font-size:12.5px; display:flex; flex-direction:column; gap:4px; overflow:auto; max-height:110px; border-top:1px solid var(--line); padding-top:6px; }
+  #voiceLog:empty { display:none; }
   #voiceLog .line { color:var(--dim); }
   #voiceLog .heard { color:var(--text); }
+  #voiceLog .answer { color:var(--recon); }
   #voiceReply { border-top:1px solid var(--line); padding-top:6px; display:flex; flex-direction:column; gap:6px; }
   #voiceReply[hidden] { display:none; }
-  #voiceReplyText { font-size:12.5px; max-height:120px; overflow:auto; white-space:pre-wrap; }
+  #voiceReplyText { font-size:12.5px; max-height:110px; overflow:auto; white-space:pre-wrap; }
   #voiceReply .row { display:flex; gap:8px; justify-content:flex-end; }
-  #voiceHint { font-size:11.5px; }
+  #voiceHint { font-size:11.5px; text-align:center; }
+  /* Once talking, the how-to is known; the room goes to the conversation. */
+  #voice.talk #voiceHint { display:none; }
+  @media (max-height:720px) {
+    #voiceOrb { width:110px; height:110px; }
+    #voiceLog, #voiceReplyText { max-height:80px; }
+  }
   #shareDialog { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:20; }
   #shareDialog[hidden] { display:none; }
   #shareDialog > div { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; width:min(520px, calc(100% - 32px)); display:flex; flex-direction:column; gap:10px; }
@@ -460,11 +473,14 @@
     <div id="detail" class="dim">Your brain grows as you work: every Claude Code session and every note appears here. Point at a circle to read it.</div>
     <section id="voice" hidden>
       <div id="voiceHead">
-        <b>Recon</b>
-        <button id="voiceState" class="dim" title="Click to start or end a conversation without saying &quot;Recon&quot;">Off</button>
+        <b>RECON</b>
         <span class="spacer"></span>
         <button id="voiceHush" class="icon" title="Stop reading the answer aloud">🔇</button>
         <button id="voiceClose" class="icon" title="Turn the mic off (or say &quot;turn off the mic&quot;)">✕</button>
+      </div>
+      <div id="voiceStage">
+        <canvas id="voiceOrb" title="Click to start or end a conversation without saying &quot;Recon&quot;"></canvas>
+        <button id="voiceState" class="dim" title="Click to start or end a conversation without saying &quot;Recon&quot;">Off</button>
       </div>
       <div id="voiceLog" aria-live="polite"></div>
       <div id="voiceReply" hidden>
@@ -474,7 +490,7 @@
           <button id="voiceDiscard">Hide</button>
         </div>
       </div>
-      <div id="voiceHint" class="dim">Say "Recon" and just talk: everything you say goes to the terminal with the Manager role, and its answers are read out as they come. Say "that's all" to end the conversation, or "turn off the mic" to switch Recon off.</div>
+      <div id="voiceHint" class="dim" title="Everything you say goes to the terminal with the Manager role, and its answers are read out as they come.">Say "Recon" and just talk. "That's all" ends the conversation; "turn off the mic" switches Recon off.</div>
     </section>
   </section>
 </main>

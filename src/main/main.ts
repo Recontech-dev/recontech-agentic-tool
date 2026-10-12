@@ -13,7 +13,7 @@ import * as files from "../brain/files";
 import { KITS, allRoles, detectKit, isBuiltInRole, kitById, roleById, standingPrompt } from "../brain/kits";
 import { claudeCommand, configDirOf, ollamaModels, online, profileEnv, signedInAs } from "../brain/launch";
 import { exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
-import { afterWakeWord, cleanupTranscript, speakable, voiceCommand } from "../brain/speech";
+import { afterWakeWord, cleanupTranscript, matchProject, openProjectRequest, speakable, voiceCommand } from "../brain/speech";
 import { addNote, removeNote } from "../brain/store";
 import { containerDir, earlierHomes, home } from "../brain/paths";
 import { moveData } from "../brain/relocate";
@@ -804,7 +804,17 @@ ipcMain.handle("mic:transcribe", (_event, pcm: number[]) => transcribe(Array.isA
 ipcMain.handle("voice:wake", (_event, text: string) => {
   const heard = String(text ?? "");
   const after = afterWakeWord(heard);
-  return { matched: after !== null, after: after ?? "", command: voiceCommand(after ?? heard) };
+  return { matched: after !== null, after: after ?? "", command: voiceCommand(after ?? heard), open: openProjectRequest(after ?? heard) };
+});
+
+/**
+ * The folder of a project the user named by voice, from the projects the brain already knows (past
+ * sessions and the current folder), so a misheard name can only ever open one of the user's own projects.
+ */
+ipcMain.handle("voice:find-project", (_event, name: string) => {
+  const known = [workspace.folder, ...brain.sessions.map((s) => s.folder)].filter(Boolean);
+  const unique = known.filter((folder, i) => known.findIndex((other) => sameFolder(other, folder)) === i && fs.existsSync(folder));
+  return { folder: matchProject(String(name ?? ""), unique) };
 });
 
 /**

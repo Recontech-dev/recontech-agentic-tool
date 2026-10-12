@@ -11,7 +11,7 @@ import { claudeCommand } from "../brain/launch";
 import * as meaning from "../brain/meaning";
 import { SHARE_FILE, exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
 import * as sorting from "../brain/sorting";
-import { afterWakeWord, cleanupTranscript, matchesWakeWord, speakable, voiceCommand } from "../brain/speech";
+import { afterWakeWord, cleanupTranscript, matchProject, matchesWakeWord, openProjectRequest, speakable, voiceCommand } from "../brain/speech";
 import { addNote, notes } from "../brain/store";
 import { newer } from "../brain/version";
 import * as ws from "../brain/workspace";
@@ -339,4 +339,21 @@ test("a raw speech-to-text transcript is cleaned up into a tidier prompt", () =>
   assert.equal(cleanupTranscript("it works!"), "It works!");
   assert.equal(cleanupTranscript("   "), "");
   assert.equal(cleanupTranscript(""), "");
+});
+
+test("Recon is asked to open a project by name, and the name is matched the way speech recognition writes it", () => {
+  assert.deepEqual(openProjectRequest("Open the Ecoshift project."), { name: "Ecoshift", explicit: true });
+  assert.deepEqual(openProjectRequest("switch to AI Terminal"), { name: "AI Terminal", explicit: false });
+  assert.deepEqual(openProjectRequest("open project seenuri"), { name: "seenuri", explicit: true });
+  assert.deepEqual(openProjectRequest("open a project"), { name: "", explicit: true });
+  assert.deepEqual(openProjectRequest("open the readme"), { name: "readme", explicit: false });
+  assert.equal(openProjectRequest("what is the status of the build"), null);
+  assert.equal(openProjectRequest("open the file and tell the builder to add a login page with two fields"), null);
+
+  const folders = ["D:\AI Terminal", "D:\Projects\Ecoshift", "C:/work/NewFieldsManagementTool", "D:\Seenuri"];
+  assert.equal(matchProject("A.I. terminal", folders), "D:\AI Terminal");
+  assert.equal(matchProject("eco shift", folders), "D:\Projects\Ecoshift");
+  assert.equal(matchProject("new fields", folders), "C:/work/NewFieldsManagementTool");
+  assert.equal(matchProject("senuri", folders), "D:\Seenuri");
+  assert.equal(matchProject("readme", folders), null);
 });

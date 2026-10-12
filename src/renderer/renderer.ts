@@ -150,16 +150,222 @@ function voiceSetState(phase: VoicePhase): void {
     : phase === "armed" ? 'Say "Recon"' : "Off";
   state.className = phase === "talk" ? "talk" : phase === "armed" ? "armed" : "dim";
   $("voiceToggle").classList.toggle("talking", phase === "talk");
+  $("voice").classList.toggle("talk", phase === "talk");
 }
 
 /** Reads text aloud. Answers queue up behind each other; `now` cuts off whatever is being said first. */
 function voiceSpeak(text: string, now = false): void {
   try {
     if (now) speechSynthesis.cancel();
-    speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+    const utterance = new SpeechSynthesisUtterance(text);
+    const voice = voicePick();
+    if (voice) utterance.voice = voice;
+    // A touch lower and more measured than the default: calm, like a butler.
+    utterance.pitch = 0.85;
+    utterance.rate = 0.98;
+    // Speech synthesis cannot be listened to, so the orb is driven by its word boundaries instead.
+    utterance.onstart = () => { orbKick = 1; };
+    utterance.onboundary = () => { orbKick = Math.min(1, orbKick + 0.7); };
+    speechSynthesis.speak(utterance);
   } catch {
     // speech synthesis is unavailable; the panel's text is still there to read
   }
+}
+
+/**
+ * Recon's voice, JARVIS-like: a British man when this computer has one (Windows: Settings > Time &
+ * Language > Speech > Add voices > English (United Kingdom) adds George), otherwise another male
+ * English voice, otherwise the default. The list fills in after startup, so it is looked up on use.
+ */
+const VOICE_PREFERENCE = [/george/i, /ryan/i, /thomas/i, /uk english male/i, /en-gb.*\bmale\b/i, /\bmark\b/i, /\bdavid\b/i, /\bguy\b/i];
+function voicePick(): SpeechSynthesisVoice | null {
+  const voices = speechSynthesis.getVoices().filter((v) => v.lang.toLowerCase().startsWith("en"));
+  for (const pattern of VOICE_PREFERENCE) {
+    const match = voices.find((v) => pattern.test(`${v.name} ${v.lang}`));
+    if (match) return match;
+  }
+  return voices.find((v) => v.lang.toLowerCase() === "en-gb") ?? null;
+}
+
+/* ---------- Recon's orb: a circular wave that moves with whoever is talking ---------- */
+
+type OrbMode = "armed" | "listen" | "think" | "speak";
+/** Points around the wave; the left half mirrors the right, low pitches at the top. */
+const ORB_POINTS = 128;
+const orbLevels = new Float32Array(ORB_POINTS / 2);
+const orbTarget = new Float32Array(ORB_POINTS / 2);
+let orbBins: Uint8Array<ArrayBuffer> | null = null;
+let orbFrame = 0;
+let orbLastDraw = 0;
+let orbSpin = 0;
+/** Jumps on each word Recon says and dies away, so its voice has a rhythm on the orb. */
+let orbKick = 0;
+let orbColors: Record<OrbMode, string> | null = null;
+const orbStill = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function orbStart(): void {
+  if (orbFrame) return;
+  const css = getComputedStyle(document.documentElement);
+  const color = (name: string) => css.getPropertyValue(name).trim();
+  orbColors = { armed: color("--open"), listen: color("--accent"), think: color("--topic"), speak: color("--recon") };
+  orbLevels.fill(0);
+  orbFrame = requestAnimationFrame(orbDraw);
+}
+
+function orbStop(): void {
+  cancelAnimationFrame(orbFrame);
+  orbFrame = 0;
+  const canvas = $("voiceOrb") as HTMLCanvasElement;
+  canvas.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function orbRgba(hex: string, alpha: number): string {
+  const n = parseInt(hex.replace("#", ""), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+function orbMode(speaking: boolean): OrbMode {
+  if (speaking) return "speak";
+  if (voicePhase !== "talk") return "armed";
+  return voiceBusy || (voiceWaiting && !voiceRecording) ? "think" : "listen";
+}
+
+/** A closed, smooth curve through the points: each corner becomes a curve through the midpoints. */
+function orbPath(ctx: CanvasRenderingContext2D, xs: number[], ys: number[]): void {
+  const n = xs.length;
+  ctx.beginPath();
+  ctx.moveTo((xs[n - 1] + xs[0]) / 2, (ys[n - 1] + ys[0]) / 2);
+  for (let i = 0; i < n; i++) {
+    const next = (i + 1) % n;
+    ctx.quadraticCurveTo(xs[i], ys[i], (xs[i] + xs[next]) / 2, (ys[i] + ys[next]) / 2);
+  }
+  ctx.closePath();
+}
+
+function orbDraw(time: number): void {
+  orbFrame = 0;
+  if (voicePhase === "idle" || !orbColors) return;
+  orbFrame = requestAnimationFrame(orbDraw);
+  let speaking = false;
+  try { speaking = speechSynthesis.speaking; } catch { /* unavailable */ }
+  const mode = orbMode(speaking);
+  // Waiting for "Recon" can last all day: a calm ring at a lower frame rate is enough then.
+  if (mode === "armed" && !voiceRecording && time - orbLastDraw < 66) return;
+  const dt = Math.min(0.1, (time - orbLastDraw) / 1000);
+  orbLastDraw = time;
+  const canvas = $("voiceOrb") as HTMLCanvasElement;
+  const size = canvas.clientWidth;
+  if (!size) return;
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(size * dpr)) canvas.width = canvas.height = Math.round(size * dpr);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, size, size);
+
+  const half = orbLevels.length;
+  if (mode === "speak") {
+    orbKick = Math.max(0.25, orbKick * Math.pow(0.08, dt));
+    for (let i = 0; i < half; i++) {
+      const wave = Math.abs(Math.sin(time / 110 + i * 0.45) * Math.sin(time / 260 - i * 0.19));
+      orbTarget[i] = orbKick * (0.25 + 0.75 * wave) * (1 - (i / half) * 0.5);
+    }
+  } else if (voiceAnalyser) {
+    if (!orbBins || orbBins.length !== voiceAnalyser.frequencyBinCount) orbBins = new Uint8Array(voiceAnalyser.frequencyBinCount);
+    voiceAnalyser.getByteFrequencyData(orbBins);
+    // Speech sits roughly between 90 Hz and 3 kHz; the bins are spread so low pitches get more of the ring.
+    const hz = voiceAnalyser.context.sampleRate / voiceAnalyser.fftSize;
+    const low = Math.max(1, Math.round(90 / hz));
+    const span = Math.round(3000 / hz) - low;
+    const gain = mode === "armed" ? 0.45 : mode === "think" ? 0.3 : 1;
+    for (let i = 0; i < half; i++) {
+      const value = orbBins[low + Math.floor(span * Math.pow(i / half, 1.5))] / 255;
+      orbTarget[i] = Math.max(0, (value - 0.3) / 0.7) * gain;
+    }
+  } else orbTarget.fill(0);
+  let level = 0;
+  for (let i = 0; i < half; i++) {
+    // Each point leans on its neighbours, so a voice's separate harmonics read as one wave, not spikes.
+    const target = (orbTarget[Math.max(0, i - 1)] + orbTarget[i] * 2 + orbTarget[Math.min(half - 1, i + 1)]) / 4;
+    // Rises fast, falls slowly, like a VU meter.
+    const rate = target > orbLevels[i] ? 0.55 : 0.14;
+    orbLevels[i] += (target - orbLevels[i]) * rate;
+    level += orbLevels[i] / half;
+  }
+
+  const color = orbColors[mode];
+  const c = size / 2;
+  const radius = size * 0.27;
+  const reach = size * 0.13;
+  if (!orbStill) orbSpin += dt * (mode === "think" ? 2.6 : 0.25 + level * 1.5);
+
+  // The HUD: an outer ring of ticks turning slowly, and two arcs turning the other way.
+  ctx.lineCap = "round";
+  ctx.strokeStyle = orbRgba(color, 0.22);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.47, 0, Math.PI * 2);
+  ctx.stroke();
+  for (let i = 0; i < 72; i++) {
+    const a = (i / 72) * Math.PI * 2 + orbSpin * 0.4;
+    const long = i % 6 === 0;
+    const r1 = size * 0.47 - (long ? size * 0.045 : size * 0.022);
+    ctx.strokeStyle = orbRgba(color, long ? 0.5 : 0.22);
+    ctx.beginPath();
+    ctx.moveTo(c + Math.cos(a) * r1, c + Math.sin(a) * r1);
+    ctx.lineTo(c + Math.cos(a) * size * 0.47, c + Math.sin(a) * size * 0.47);
+    ctx.stroke();
+  }
+  ctx.lineWidth = 2;
+  for (let k = 0; k < 2; k++) {
+    const a = -orbSpin * (mode === "think" ? 1 : 0.7) + k * Math.PI;
+    ctx.strokeStyle = orbRgba(color, mode === "think" ? 0.9 : 0.45);
+    ctx.beginPath();
+    ctx.arc(c, c, size * 0.405, a, a + (mode === "think" ? 1.4 : 0.9));
+    ctx.stroke();
+  }
+
+  // The core glows brighter the louder it is.
+  const core = ctx.createRadialGradient(c, c, 0, c, c, radius);
+  core.addColorStop(0, orbRgba(color, 0.35 + level * 0.5));
+  core.addColorStop(0.6, orbRgba(color, 0.08 + level * 0.2));
+  core.addColorStop(1, orbRgba(color, 0));
+  ctx.fillStyle = core;
+  ctx.beginPath();
+  ctx.arc(c, c, radius, 0, Math.PI * 2);
+  ctx.fill();
+
+  // The wave itself: outward with the sound, plus a fainter echo inward. A slow breath keeps it alive in silence.
+  const outerX: number[] = [];
+  const outerY: number[] = [];
+  const innerX: number[] = [];
+  const innerY: number[] = [];
+  for (let i = 0; i < ORB_POINTS; i++) {
+    const j = i < half ? i : ORB_POINTS - 1 - i;
+    const breath = orbStill ? 0 : 0.035 * (1 + Math.sin(time / 700 + j * 0.35));
+    // Half the swell is the overall loudness, so the ring grows as one and the pitches ride on top of it.
+    const lift = Math.min(1, orbLevels[j] * 0.55 + level * 0.45 + breath);
+    const a = (i / ORB_POINTS) * Math.PI * 2 - Math.PI / 2;
+    const outer = radius + reach * lift;
+    const inner = radius - reach * 0.4 * lift;
+    outerX.push(c + Math.cos(a) * outer);
+    outerY.push(c + Math.sin(a) * outer);
+    innerX.push(c + Math.cos(a) * inner);
+    innerY.push(c + Math.sin(a) * inner);
+  }
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 8 + level * 18;
+  ctx.lineWidth = 1.6;
+  ctx.strokeStyle = orbRgba(color, 0.95);
+  orbPath(ctx, outerX, outerY);
+  ctx.stroke();
+  ctx.fillStyle = orbRgba(color, 0.06 + level * 0.12);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = orbRgba(color, 0.4);
+  orbPath(ctx, innerX, innerY);
+  ctx.stroke();
 }
 
 /** A short tone: rising when a conversation starts, falling when it ends, a tick when something was sent. */
@@ -199,7 +405,6 @@ async function voiceStart(): Promise<boolean> {
   $("voiceLog").textContent = "";
   $("voiceReply").hidden = true;
   voiceWaiting = 0;
-  voiceLog('Say "Recon" to start talking.');
   voiceSetState("armed");
   const ctx = new AudioContext();
   voiceCtx = ctx;
@@ -209,6 +414,7 @@ async function voiceStart(): Promise<boolean> {
   voiceAnalyser = analyser;
   api.send("voice:listening", true);
   voiceWatchTimer = window.setInterval(voiceWatch, VOICE_WATCH_MS);
+  orbStart();
   // The speech model loads on its first request, which would otherwise make the first "Recon" wait
   // seconds for it. A tenth of a second of silence starts it now; whatever it hears there is dropped.
   void api.invoke("mic:transcribe", Array.from({ length: 1600 }, () => 0)).catch(() => {});
@@ -228,6 +434,7 @@ function voiceStop(): void {
   void voiceCtx?.close();
   voiceCtx = null;
   voiceAnalyser = null;
+  orbStop();
   voiceReplyPending = null;
   voiceWaiting = 0;
   voiceBusy = 0;
@@ -251,6 +458,8 @@ function voiceWake(): void {
 /** Ends the conversation without turning the mic off: "Recon" starts the next one. */
 function voiceSleep(message: string): void {
   if (voicePhase !== "talk") return;
+  // A question still open ("Shall I go ahead?") ends with the conversation; it is never answered later by surprise.
+  voiceFolderPending = null;
   voiceSetState("armed");
   voiceTone("end");
   voiceLog(message);
@@ -334,9 +543,15 @@ async function voiceTranscribeAndAct(blob: Blob): Promise<void> {
     const answer = await api.invoke("mic:transcribe", pcmForIpc(pcm));
     // Transcribing takes a moment: if the feature was turned off meanwhile, this clip is stale.
     if ((voicePhase as VoicePhase) === "idle") return;
+    if (answer?.error) {
+      // Surfaced so a failing speech model is visible instead of looking like the mic heard nothing.
+      toast(`Recon didn't catch that: ${answer.error}`, true);
+      return;
+    }
     const text = String(answer?.text || "");
     if (!text) return;
-    const heard: { matched: boolean; after: string; command: "off" | "sleep" | null } = await api.invoke("voice:wake", text);
+    const heard: { matched: boolean; after: string; command: "off" | "sleep" | null; open: { name: string; explicit: boolean } | null } =
+      await api.invoke("voice:wake", text);
     // Outside a conversation only what starts with "Recon" counts; other talk in the room is ignored.
     if (voicePhase === "armed" && !heard.matched) return;
     if (heard.command === "off") {
@@ -357,11 +572,74 @@ async function voiceTranscribeAndAct(blob: Blob): Promise<void> {
     if (!wasTalking) voiceAnchorId = active;
     voiceWake();
     const said = heard.matched ? heard.after : text;
-    if (said.trim()) await voiceAskManager(said);
+    if (voiceFolderPending) await voiceAnswerFolder(said);
+    else if (heard.open && await voiceOpenProject(said, heard.open)) return;
+    else if (said.trim()) await voiceAskManager(said);
     // When the user already went on talking after a pause, "Yes?" would talk over them and into their recording.
     else if (!wasTalking && !voiceRecording) voiceSpeak("Yes?");
-  } catch {
-    // a missed utterance just waits for the next one
+  } catch (error) {
+    // An unexpected failure (a clip that wouldn't decode, a dropped IPC call) — surfaced so it isn't
+    // mistaken for the mic simply hearing nothing; a genuinely missed utterance still just waits for the next one.
+    console.error("[voice]", error);
+    toast(`Recon hit an error: ${error instanceof Error ? error.message : String(error)}`, true);
+  }
+}
+
+/** A project Recon was asked to open, waiting for the user's spoken "yes" since it restarts every terminal. */
+let voiceFolderPending: { folder: string; name: string } | null = null;
+
+/**
+ * "Open the Ecoshift project": handled here, not by the Manager. Returns false when the name matches no
+ * known project and the user did not say "project" or "folder", so the request goes to the Manager instead.
+ */
+async function voiceOpenProject(said: string, request: { name: string; explicit: boolean }): Promise<boolean> {
+  if (!request.name) {
+    voiceLog(`You: ${said}`, "heard");
+    voiceSpeak("Opening the folder picker.");
+    $("folder").click();
+    return true;
+  }
+  const { folder }: { folder: string | null } = await api.invoke("voice:find-project", request.name);
+  if (!folder) {
+    if (!request.explicit) return false;
+    voiceLog(`You: ${said}`, "heard");
+    voiceLog(`No project called "${request.name}" in the brain yet.`);
+    voiceSpeak(`I couldn't find a project called ${request.name}. Open it once with Choose project folder and I'll know it from then on.`);
+    return true;
+  }
+  voiceLog(`You: ${said}`, "heard");
+  const name = folder.split(/[\\/]+/).filter(Boolean).pop() ?? folder;
+  if (workspace.folder && folder.toLowerCase() === workspace.folder.toLowerCase()) {
+    voiceSpeak(`${name} is already open.`);
+    return true;
+  }
+  if (openFiles.some(isDirty)) {
+    voiceLog("Save or close the files with unsaved changes first.");
+    voiceSpeak(`You have unsaved files open. Save them first, then ask me again.`);
+    return true;
+  }
+  if (started.size) {
+    voiceFolderPending = { folder, name };
+    voiceLog(`Open ${folder}? Every terminal restarts there. Say "yes" to go ahead.`);
+    voiceSpeak(`Opening ${name} restarts every terminal. Shall I go ahead?`);
+    return true;
+  }
+  voiceSpeak(`Opening ${name}.`);
+  await switchFolder(folder, true);
+  return true;
+}
+
+/** The user's answer to "Shall I go ahead?": yes opens the project, anything else leaves things as they are. */
+async function voiceAnswerFolder(said: string): Promise<void> {
+  const pending = voiceFolderPending!;
+  voiceFolderPending = null;
+  voiceLog(`You: ${said}`, "heard");
+  if (/^\W*(?:yes|yeah|yep|sure|ok(?:ay)?|go ahead|do it|please do|confirm(?:ed)?|affirmative)\b/i.test(said)) {
+    voiceSpeak(`Opening ${pending.name}.`);
+    await switchFolder(pending.folder, true);
+  } else {
+    voiceLog("Left the project as it is.");
+    voiceSpeak("Very well, I'll leave it.");
   }
 }
 
@@ -404,7 +682,7 @@ async function voiceSwitch(on: boolean): Promise<void> {
 $("voiceToggle").onclick = () => void voiceSwitch(voicePhase === "idle");
 $("voiceClose").onclick = () => void voiceSwitch(false);
 // Clicking the state starts or ends a conversation by hand, for when saying "Recon" is not convenient.
-$("voiceState").onclick = () => {
+$("voiceState").onclick = $("voiceOrb").onclick = () => {
   if (voicePhase === "armed") {
     voiceAnchorId = active;
     voiceWake();
@@ -1152,14 +1430,18 @@ api.on("net:status", (online: boolean) => {
 api.on("term:exit", (id: string) => exited.add(id) && terms.get(id)?.term.write("\r\n\x1b[90m[The terminal closed. Press ↻ to start it again.]\x1b[0m\r\n"));
 
 $("folder").onclick = async () => {
-  const before = workspace.folder;
   // Picked first, so a user who cancels the native picker is never asked to confirm a restart first.
   const folder: string | null = await api.invoke("workspace:pick-folder");
-  if (!folder || folder === before) return;
+  if (folder) await switchFolder(folder);
+};
+
+/** Makes `folder` the project: every terminal restarts there. `confirmed` when the user already agreed by voice. */
+async function switchFolder(folder: string, confirmed = false): Promise<void> {
+  if (!folder || folder === workspace.folder) return;
   // Open files belong to the old folder and close with it.
   const unsaved = openFiles.filter(isDirty).length;
-  if (unsaved && !confirm(`${unsaved} open file${unsaved === 1 ? " has" : "s have"} unsaved changes that will be lost. Change the project folder anyway?`)) return;
-  if (started.size && !confirm("Changing the project folder restarts every terminal in the new folder. Running Claude Code sessions are closed; you can resume them later from the brain. Continue?")) return;
+  if (!confirmed && unsaved && !confirm(`${unsaved} open file${unsaved === 1 ? " has" : "s have"} unsaved changes that will be lost. Change the project folder anyway?`)) return;
+  if (!confirmed && started.size && !confirm("Changing the project folder restarts every terminal in the new folder. Running Claude Code sessions are closed; you can resume them later from the brain. Continue?")) return;
   // The free terminal is never auto-started by render() below, so if it was already running it
   // must be restarted by hand too, or it would keep working in the folder it had before.
   const free = workspace.profiles.find((p) => p.kind === "free");
@@ -1174,7 +1456,7 @@ $("folder").onclick = async () => {
   void restoreOpenFiles();
   if (freeWasRunning) start(free!.id);
   offerSharedNotes();
-};
+}
 $("layout").onclick = async () => {
   workspace = await api.invoke("workspace:layout", workspace.layout === "tabs" ? "grid" : "tabs");
   $("work").classList.toggle("tabs", workspace.layout === "tabs");
