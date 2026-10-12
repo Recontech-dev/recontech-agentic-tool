@@ -61,9 +61,17 @@
   /* A quarter of the width until the user drags the divider: on a first run the graph is still empty. */
   #brain { flex:1; min-width:0; max-width:460px; display:flex; flex-direction:column; border-left:1px solid var(--line); }
   #brain[hidden] { display:none; }
-  #brainbar { display:flex; gap:8px; margin:8px; align-items:center; flex-wrap:wrap; }
-  #search { flex:1 1 140px; min-width:140px; }
-  #filter { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 6px; }
+  /* Search on its own row, then the session filter and Smart sorting side by side at equal width and
+     height, so neither ends up alone on a row; a brain panel dragged wide enough fits all three in one. */
+  #brain { container-type:inline-size; }
+  #brainbar { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; margin:8px; align-items:stretch; }
+  #search { grid-column:1 / -1; min-width:0; }
+  #filter { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 6px; min-width:0; }
+  #sorting { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  @container (min-width:560px) {
+    #brainbar { grid-template-columns:minmax(0, 1fr) auto auto; }
+    #search { grid-column:auto; }
+  }
   #sortingState { color:var(--dim); font-size:12px; margin:-4px 8px 6px; }
   #sortingState:empty { display:none; }
   #results { max-height:30%; overflow:auto; padding:0 8px; }
