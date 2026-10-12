@@ -59,6 +59,11 @@ export interface Workspace {
   roles?: Role[];
   /** Smart sorting (Laya) is off unless the user turns it on; its model is stored in modelDir. */
   sorting?: { enabled: boolean; modelDir: string };
+  /**
+   * Token budgets the user set for one 5-hour session and one week, which each Claude terminal's bar
+   * fills toward. Claude's real limits are not on this computer, so these are the user's own figures.
+   */
+  usageBudget?: { session?: number; week?: number };
 }
 
 /** Claude Code folders that already exist, such as ~/.claude-account1 made by an earlier multi-terminal setup. */

@@ -2,7 +2,7 @@
 // This file runs in the page, so it uses only browser APIs and window.api from the preload script.
 
 interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama" | "free"; model?: string; role?: string }
-interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number; filesOpen?: boolean; voiceOn?: boolean }
+interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number; filesOpen?: boolean; voiceOn?: boolean; usageBudget?: { session?: number; week?: number } }
 interface GraphNode { id: string; kind: string; label: string; text: string; detail: string; open: boolean;
   color?: string; resume?: { profile: string; id: string; folder: string }; tag?: string; unfinished?: boolean;
   note?: { folder: string; number: number };
@@ -1231,6 +1231,47 @@ function noteLimitState(id: string, tail: string): void {
   showUsageBars();
 }
 
+/** A small bar filled to used/budget: amber from 80%, red at or over the budget. */
+function meter(used: number, budget: number): HTMLElement {
+  const share = used / budget;
+  const bar = document.createElement("span");
+  bar.className = `meter${share >= 1 ? " over" : share >= 0.8 ? " near" : ""}`;
+  const fill = document.createElement("i");
+  fill.style.width = `${Math.min(100, Math.round(share * 100))}%`;
+  bar.append(fill);
+  return bar;
+}
+
+/** "2M", "500k", "1.5b" or "2,000,000" -> a token count; empty or unreadable -> 0 (no budget). */
+function parseCount(text: string): number {
+  const match = /^([\d.,]+)\s*([kmbt]?)$/i.exec(text.trim());
+  if (!match) return 0;
+  const n = Number(match[1].replace(/,/g, "")) * ({ "": 1, k: 1e3, m: 1e6, b: 1e9, t: 1e12 } as Record<string, number>)[match[2].toLowerCase()];
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+function showBudget(): void {
+  const budget = workspace.usageBudget ?? {};
+  ($("budgetSession") as HTMLInputElement).value = budget.session ? shortCount(budget.session) : "";
+  ($("budgetWeek") as HTMLInputElement).value = budget.week ? shortCount(budget.week) : "";
+}
+
+for (const id of ["budgetSession", "budgetWeek"]) {
+  const input = $(id) as HTMLInputElement;
+  input.onchange = () => {
+    const session = parseCount(($("budgetSession") as HTMLInputElement).value);
+    const week = parseCount(($("budgetWeek") as HTMLInputElement).value);
+    if (input.value.trim() && !parseCount(input.value)) toast("Write the budget as a number of tokens, such as 2M, 500K or 2,000,000.", true);
+    workspace.usageBudget = { session: session || undefined, week: week || undefined };
+    api.invoke("ui:save", { usageBudget: { session, week } });
+    showBudget();
+    showUsageBars();
+  };
+  input.onkeydown = (event) => {
+    if (event.key === "Enter") input.blur();
+  };
+}
+
 function showUsageBars(): void {
   const now = Date.now();
   for (const bar of document.querySelectorAll<HTMLElement>(".usagebar")) {
@@ -1257,11 +1298,14 @@ function showUsageBars(): void {
       span.append(full, brief);
       return span;
     };
+    const budget = workspace?.usageBudget ?? {};
     const weekText = `Week ${usage ? shortCount(usage.week.total) : "–"}`;
-    const week = part("week", weekText, weekText);
+    const week = part("week", budget.week ? `${weekText} of ${shortCount(budget.week)}` : weekText, weekText);
+    if (budget.week) week.prepend(meter(usage?.week.total ?? 0, budget.week));
     const session = usage?.session
-      ? part("session", `Session ${shortCount(usage.session.tokens.total)}`, `Session ${shortCount(usage.session.tokens.total)}`)
+      ? part("session", `Session ${shortCount(usage.session.tokens.total)}${budget.session ? ` of ${shortCount(budget.session)}` : ""}`, `Session ${shortCount(usage.session.tokens.total)}`)
       : part("session", "No session in progress", "No session");
+    if (budget.session) session.prepend(meter(usage?.session?.tokens.total ?? 0, budget.session));
     if (usage?.session) {
       const until = document.createElement("span");
       until.className = "until";
@@ -1280,6 +1324,9 @@ function showUsageBars(): void {
           ? `Session window ${time(usage.session.start)} to ${time(usage.session.end)}: ${usage.session.tokens.total.toLocaleString()} tokens (${usage.session.tokens.output.toLocaleString()} output).\n`
           : "No 5-hour session window in progress.\n")
       : "Not counted yet.\n") +
+      (budget.session || budget.week
+        ? `Budget: ${budget.session ? `${budget.session.toLocaleString()} a session` : "no session budget"}, ${budget.week ? `${budget.week.toLocaleString()} a week` : "no weekly budget"} (set under Tokens used in the brain panel).\n`
+        : "Set a session and weekly budget under Tokens used in the brain panel to see bars here.\n") +
       "Session windows are estimated from message times. Claude's own limits are not on this computer, " +
       "so the limit state shows what Claude Code last printed in this terminal.";
   }
@@ -2258,6 +2305,7 @@ window.addEventListener("beforeunload", (event) => {
   await showKit();
   if (workspace.brainWidth) setBrainWidth(workspace.brainWidth);
   showFontSize();
+  showBudget();
   if (workspace.filesOpen) {
     $("files").hidden = false;
     $("filesToggle").classList.add("on");

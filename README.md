@@ -19,7 +19,7 @@ Recontech Agentic Tool puts your Claude Code terminals side by side in one windo
 - **Search everything:** find any earlier decision or session across all projects, by words or, with a small local model, by meaning.
 - **Roles:** make one terminal the Manager, others the Builder, Reviewer or Tester, and they hand work to each other. Make roles of your own in the role manager.
 - **Hey Recon:** turn on the voice assistant, say "Hey Recon" and your request, and it goes to your Manager terminal. Speech is recognised on your computer.
-- **Token usage:** tokens used this week, this month, this year and in total above the graph, and under every terminal its own weekly usage, its current 5-hour session and whether Claude Code said it reached a limit.
+- **Token usage:** tokens used this week, this month, this year and in total above the graph, and under every terminal its own weekly usage, its current 5-hour session (as bars toward budgets you set) and whether Claude Code said it reached a limit.
 - **Project kits:** the app recognises website, mobile, Unity and Godot projects and gives Claude the right working rules for each.
 - **Team memory:** write a project's notes to a file in the project so teammates can import them.
 - **Unfinished work list:** what was left unfinished, with one click to resume.
@@ -95,7 +95,9 @@ Under each Claude terminal, a thin bar shows that terminal's own usage:
 - **Session:** its tokens in the current 5-hour session window and when the window ends. Claude's session limits count in windows like this one; the window is estimated from message times.
 - **Limit:** **Within limit**, **Near limit** or **Limit reached**, with the reset time, as Claude Code last printed in that terminal. It clears once Claude answers there again.
 
-The numbers come from the usage figures Claude Code writes into its own session files on your computer, counted once each, and nothing is sent anywhere. Your plan's actual limits are not stored on your computer, so the app can show how much was used and what Claude Code said, but not a percentage of your limit. Ollama and Free models terminals are not counted.
+**Budgets.** To see Week and Session as bars, type a budget into the **Budget** row under the tiles: one for a **Session**, one for a **Week**, as a number of tokens such as `2M`, `500K` or `2,000,000`. Use your plan's figures or what you want to stay under. Every Claude terminal's bar then fills toward them ("Session 340K of 2M"): amber from 80%, red at 100% or more. The budgets apply to all Claude terminals and are saved with your workspace; leave a box empty for no bar.
+
+The numbers come from the usage figures Claude Code writes into its own session files on your computer, counted once each, and nothing is sent anywhere. Your plan's actual limits are not stored on your computer, so the app can show how much was used, what Claude Code said and how it compares with your own budgets, but not a percentage of your real limit. Ollama and Free models terminals are not counted.
 
 ### Project kits
 
