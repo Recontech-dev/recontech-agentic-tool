@@ -1636,14 +1636,50 @@ async function resumeSession(ref: { profile: string; id: string; folder: string 
 
 /* ---------- Updates ---------- */
 
-async function checkUpdate(): Promise<void> {
-  const update: { current: string; latest: string } | null = await api.invoke("update:check");
-  if (!update) return;
-  $("updateText").textContent = `Version ${update.latest} is available (you have ${update.current}).`;
-  $("update").hidden = false;
+// The main process checks for a new version on startup, downloads it by itself, and reports each step here.
+interface UpdateStatus { status: "checking" | "none" | "available" | "downloading" | "ready" | "error"; version?: string; percent?: number; message?: string }
+let updateShown: UpdateStatus = { status: "none" };
+/** What the user clicked Later on: the download of a version, or its install. The banner stays away for that. */
+let updateDismissed = "";
+const updateKey = (update: UpdateStatus) => `${update.version ?? ""}:${update.status === "ready" ? "install" : "download"}`;
+
+function showUpdate(update: UpdateStatus): void {
+  const before = updateShown;
+  updateShown = update;
+  const named = update.version ? `version ${update.version}` : "the new version";
+  const percent = Math.max(0, Math.min(100, Math.round(Number(update.percent) || 0)));
+  const text: Record<UpdateStatus["status"], string> = {
+    checking: "",
+    none: "",
+    available: `A new version is out: downloading ${named} in the background.`,
+    downloading: `Downloading ${named}… ${percent}%`,
+    ready: `${update.version ? `Version ${update.version}` : "The update"} is ready. Restart to update; the terminals start again when the app reopens.`,
+    // Only worth saying when the user was already watching a download; a failed check on startup stays quiet.
+    error: before.status === "available" || before.status === "downloading" ? `The update could not be downloaded${update.message ? `: ${update.message}` : "."} It will be tried again next time the app starts.` : "",
+  };
+  const progress = $("updateProgress") as HTMLProgressElement;
+  progress.hidden = update.status !== "downloading";
+  progress.value = percent;
+  const go = $("updateGo") as HTMLButtonElement;
+  go.hidden = update.status !== "ready";
+  go.disabled = false;
+  $("updateText").textContent = text[update.status] ?? "";
+  $("update").hidden = !text[update.status] || updateDismissed === updateKey(update);
 }
-$("updateGo").onclick = () => api.invoke("update:open");
-$("updateClose").onclick = () => ($("update").hidden = true);
+api.on("update:status", (update: UpdateStatus) => showUpdate(update));
+$("updateGo").onclick = async () => {
+  if (!confirm("Restart to update? Every terminal closes, and they start again when the app reopens.")) return;
+  ($("updateGo") as HTMLButtonElement).disabled = true;
+  const answer = await api.invoke("update:install");
+  if (answer?.error) {
+    ($("updateGo") as HTMLButtonElement).disabled = false;
+    toast(answer.error, true);
+  }
+};
+$("updateClose").onclick = () => {
+  updateDismissed = updateKey(updateShown);
+  $("update").hidden = true;
+};
 
 /* ---------- Smart sorting ---------- */
 
@@ -2534,7 +2570,6 @@ window.addEventListener("beforeunload", (event) => {
   render();
   offerSharedNotes();
   showUnfinished();
-  checkUpdate();
   showFreeHint();
   await refreshAccounts();
   offerFoundFolders();

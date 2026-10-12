@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as pty from "node-pty";
 import { ChildProcess, spawn } from "node:child_process";
+import { autoUpdater } from "electron-updater";
 
 import { Brain } from "../brain/brain";
 import * as files from "../brain/files";
@@ -19,7 +20,6 @@ import { moveData } from "../brain/relocate";
 import { removeSession, renameProfileSessions, sameFolder } from "../brain/sessions";
 import { bundleReady, renameProfileLabels } from "../brain/sorting";
 import { tokenUsage } from "../brain/usage";
-import { newer } from "../brain/version";
 import * as ws from "../brain/workspace";
 import { Control } from "./control";
 import { Inbox } from "./inbox";
@@ -422,19 +422,32 @@ function currentKit(folder: string): string {
   return workspace.kits?.[folder.toLowerCase()] ?? detectKit(folder);
 }
 
-const RELEASES_API = "https://api.github.com/repos/erlruben/recontech-agentic-tool/releases/latest";
-const RELEASES_PAGE = "https://github.com/erlruben/recontech-agentic-tool/releases/latest";
+/*
+ * Updates: on start the app asks GitHub Releases for a newer version (latest.yml, published with each
+ * release) and downloads it in the background. It is only installed when the user clicks to restart,
+ * or when they quit the app. Nothing about the user is sent.
+ */
+type UpdateStatus = { status: "checking" | "none" | "available" | "downloading" | "ready" | "error"; version?: string; percent?: number; message?: string };
+let updateStatus: UpdateStatus = { status: "none" };
 
-/** Ask GitHub for the newest release. Only the version number is read; nothing about the user is sent. */
-async function checkForUpdate(): Promise<{ current: string; latest: string } | null> {
-  try {
-    const response = await fetch(RELEASES_API, { headers: { accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(8000) });
-    if (!response.ok) return null;
-    const latest = String(((await response.json()) as { tag_name?: string }).tag_name ?? "");
-    return latest && newer(latest, app.getVersion()) ? { current: app.getVersion(), latest: latest.replace(/^v/, "") } : null;
-  } catch {
-    return null;
-  }
+function setUpdateStatus(status: UpdateStatus): void {
+  updateStatus = status;
+  send("update:status", status);
+}
+
+function startUpdates(): void {
+  // A development build has no release to update from (and no app-update.yml to say where it is).
+  if (!app.isPackaged) return;
+  autoUpdater.autoDownload = true;
+  autoUpdater.on("checking-for-update", () => setUpdateStatus({ status: "checking" }));
+  autoUpdater.on("update-not-available", () => setUpdateStatus({ status: "none" }));
+  autoUpdater.on("update-available", (info) => setUpdateStatus({ status: "available", version: info.version }));
+  autoUpdater.on("download-progress", (progress) =>
+    setUpdateStatus({ status: "downloading", version: updateStatus.version, percent: Math.round(progress.percent) }));
+  autoUpdater.on("update-downloaded", (info) => setUpdateStatus({ status: "ready", version: info.version }));
+  autoUpdater.on("error", (error) => setUpdateStatus({ status: "error", version: updateStatus.version, message: error?.message ?? String(error) }));
+  // Offline or GitHub unreachable: the "error" event has already said so.
+  autoUpdater.checkForUpdates().catch(() => {});
 }
 
 function pushGraph(force = false): void {
@@ -492,6 +505,8 @@ function createWindow(): void {
   win.webContents.on("did-finish-load", () => {
     pushGraph(true);
     send("net:status", isOnline);
+    // The update check can finish before the page is listening; it gets the latest status again here.
+    send("update:status", updateStatus);
     // ALT_SCREENSHOT=<file.png> saves a picture of the window after a few seconds and quits (for automated checks).
     const shot = process.env.ALT_SCREENSHOT;
     if (shot) {
@@ -733,9 +748,10 @@ ipcMain.handle("files:vscode", (_event, relative: string) =>
     return { opened: true };
   }),
 );
-ipcMain.handle("update:check", () => checkForUpdate());
-// Only ever opens the app's own releases page, never an address the page supplies.
-ipcMain.handle("update:open", () => shell.openExternal(RELEASES_PAGE));
+// Restarts into the downloaded version, only when the user asks. Silent: the installer was already run once.
+ipcMain.handle("update:install", () => {
+  if (updateStatus.status === "ready") autoUpdater.quitAndInstall(true, true);
+});
 ipcMain.handle("free:get", () => ({
   ...free.describe(), enabled: workspace.profiles.some((p) => p.kind === "free"), contained: workspace.freeContained !== false,
 }));
@@ -758,7 +774,6 @@ ipcMain.handle("free:test", (_event, entries?: { id: string; key?: string; model
 );
 ipcMain.handle("sorting:get", () => sortingStatus);
 ipcMain.handle("sorting:toggle", () => toggleSorting());
-ipcMain.handle("mic:get", () => transcriberStatus);
 ipcMain.handle("mic:transcribe", (_event, pcm: number[]) => transcribe(Array.isArray(pcm) ? pcm.map(Number) : []));
 
 /** Whether a transcript starts with "Hey Recon", and what was said after it, if anything. */
@@ -833,6 +848,7 @@ app.whenReady().then(async () => {
   setInterval(() => inbox.pending().forEach((id) => deliverWaiting(id)), INBOX_CHECK_MS);
   checkNetwork();
   setInterval(checkNetwork, NETWORK_CHECK_MS);
+  startUpdates();
   if (workspace.sorting?.enabled) {
     setSortingStatus({ status: "starting" });
     startSorter();

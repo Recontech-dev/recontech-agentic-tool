@@ -1,6 +1,7 @@
 name: Release
 
 # Pushing a tag such as v0.3.0 runs the tests, builds the Windows installer and attaches it to a GitHub release.
+# The tag must match the version in package.json.
 on:
   push:
     tags: ["v*"]
@@ -23,6 +24,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
+        # The installed app updates itself from latest.yml, the versioned installer and its .blockmap
+        # (for downloading only what changed). The copy without a version keeps the website's
+        # releases/latest/download/RecontechAgenticTool-Setup.exe link working.
         run: |
           cp release/RecontechAgenticTool-Setup-*.exe RecontechAgenticTool-Setup.exe
-          gh release create "${{ github.ref_name }}" RecontechAgenticTool-Setup.exe --title "${{ github.ref_name }}" --generate-notes
+          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --generate-notes \
+            RecontechAgenticTool-Setup.exe release/RecontechAgenticTool-Setup-*.exe release/RecontechAgenticTool-Setup-*.exe.blockmap release/latest.yml

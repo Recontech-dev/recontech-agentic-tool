@@ -19,6 +19,7 @@
     "@receptron/laya": "^0.1.2",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
+    "electron-updater": "^6.8.9",
     "monaco-editor": "0.56.0",
     "node-pty": "^1.1.0"
   },
@@ -63,6 +64,12 @@
       "include": "installer/installer.nsh",
       "guid": "f2f54427-a522-50b4-bf4b-3bd976b1dd7d"
     },
-    "npmRebuild": false
+    "npmRebuild": false,
+    "publish": {
+      "provider": "github",
+      "owner": "erlruben",
+      "repo": "recontech-agentic-tool",
+      "releaseType": "release"
+    }
   }
 }
