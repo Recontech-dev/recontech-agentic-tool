@@ -878,6 +878,7 @@ $("toggle").onclick = () => {
   $("divider").hidden = brain.hidden;
   $("toggle").textContent = brain.hidden ? "Show brain" : "Hide brain";
   soon(() => { fitAll(); resizeMap(); });
+  if (!brain.hidden) showUsage();
 };
 const chosenKind = () => (document.querySelector('input[name="kind"]:checked') as HTMLInputElement).value;
 function showKind(): void {
@@ -1144,6 +1145,83 @@ async function showKit(): Promise<void> {
 $("kit").addEventListener("change", async () => {
   workspace = await api.invoke("kit:set", ($("kit") as HTMLSelectElement).value);
   if (started.size) toast("The new kit applies to terminals when they start. Restart a terminal (↻) to use it there.");
+});
+
+/* ---------- Token usage ---------- */
+// Claude tokens used this week (from Monday), this month, this year and in total, counted by the main
+// process from Claude Code's own transcripts. The first count can take a few seconds; later ones are quick.
+
+interface Tokens { input: number; output: number; cacheWrite: number; cacheRead: number; total: number }
+interface UsageSummary { week: Tokens; month: Tokens; year: Tokens; all: Tokens; since: number }
+
+const USAGE_REFRESH_MS = 60_000;
+const USAGE_OPEN_KEY = "usageOpen";
+
+/** 1234 -> "1.2K", 8212900000 -> "8.2B": short enough for a tile. */
+function shortCount(n: number): string {
+  for (const [size, unit] of [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]] as const) {
+    if (n >= size) return `${(n / size).toFixed(n / size < 100 ? 1 : 0).replace(/\.0$/, "")}${unit}`;
+  }
+  return String(n);
+}
+
+let usageBusy = false;
+async function showUsage(): Promise<void> {
+  // Nothing to update while it cannot be seen; it catches up when shown again.
+  if (usageBusy || $("brain").hidden || !($("usage") as HTMLDetailsElement).open) return;
+  usageBusy = true;
+  const state = $("usageState");
+  if (!$("usageTiles").childElementCount) state.textContent = "Counting…";
+  try {
+    const usage: UsageSummary | { error: string } = await api.invoke("usage:get");
+    if ("error" in usage) {
+      state.textContent = "Could not count";
+      state.title = usage.error;
+      return;
+    }
+    const tiles = $("usageTiles");
+    tiles.textContent = "";
+    const periods: [keyof Omit<UsageSummary, "since">, string][] = [["week", "This week"], ["month", "This month"], ["year", "This year"], ["all", "Total"]];
+    for (const [key, name] of periods) {
+      const t = usage[key];
+      const tile = document.createElement("div");
+      tile.className = `usage-tile ${key}`;
+      const label = document.createElement("div");
+      label.className = "label";
+      label.textContent = name;
+      const value = document.createElement("div");
+      value.className = "value";
+      value.textContent = shortCount(t.total);
+      const split = document.createElement("div");
+      split.className = "split";
+      split.textContent = `${shortCount(t.output)} out · ${shortCount(t.input + t.cacheWrite)} in`;
+      const exact = (n: number) => n.toLocaleString();
+      tile.title = `${name}: ${exact(t.total)} tokens\n` +
+        `Output (Claude's answers): ${exact(t.output)}\nInput: ${exact(t.input)}\n` +
+        `Written to cache: ${exact(t.cacheWrite)}\nRead from cache: ${exact(t.cacheRead)}\n` +
+        "Most of a total is usually context read back from the cache on each turn.";
+      tile.append(label, value, split);
+      tiles.append(tile);
+    }
+    state.textContent = usage.since ? `since ${new Date(usage.since).toLocaleDateString()}` : "nothing yet";
+    state.title = "";
+  } finally {
+    usageBusy = false;
+  }
+}
+try {
+  if (localStorage.getItem(USAGE_OPEN_KEY) === "0") ($("usage") as HTMLDetailsElement).open = false;
+} catch {
+  // Storage can be unavailable; the panel then simply starts open.
+}
+$("usage").addEventListener("toggle", () => {
+  const open = ($("usage") as HTMLDetailsElement).open;
+  try {
+    localStorage.setItem(USAGE_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    // Not remembered this time; nothing else depends on it.
+  }
+  if (open) showUsage();
 });
 
 /* ---------- Team memory ---------- */
@@ -2108,6 +2186,8 @@ window.addEventListener("beforeunload", (event) => {
   await refreshAccounts();
   offerFoundFolders();
   showSorting(await api.invoke("sorting:get"));
+  showUsage();
+  setInterval(showUsage, USAGE_REFRESH_MS);
   const frame = () => {
     if (quietFrames < QUIET_AFTER || dragged || panning) {
       step();

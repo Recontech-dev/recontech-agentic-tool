@@ -10,7 +10,7 @@ import { ChildProcess, spawn } from "node:child_process";
 import { Brain } from "../brain/brain";
 import * as files from "../brain/files";
 import { KITS, allRoles, detectKit, isBuiltInRole, kitById, roleById, standingPrompt } from "../brain/kits";
-import { claudeCommand, ollamaModels, online, profileEnv, signedInAs } from "../brain/launch";
+import { claudeCommand, configDirOf, ollamaModels, online, profileEnv, signedInAs } from "../brain/launch";
 import { exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
 import { afterWakeWord, cleanupTranscript } from "../brain/speech";
 import { addNote, removeNote } from "../brain/store";
@@ -18,6 +18,7 @@ import { containerDir, earlierHomes, home } from "../brain/paths";
 import { moveData } from "../brain/relocate";
 import { removeSession, renameProfileSessions, sameFolder } from "../brain/sessions";
 import { bundleReady, renameProfileLabels } from "../brain/sorting";
+import { tokenUsage } from "../brain/usage";
 import { newer } from "../brain/version";
 import * as ws from "../brain/workspace";
 import { Control } from "./control";
@@ -516,6 +517,10 @@ ipcMain.handle("profile:remove", (_event, id: string) =>
 );
 ipcMain.handle("brain:search", (_event, query: string) => brain.searchSmart(String(query), 20));
 ipcMain.handle("brain:unfinished", () => brain.unfinished(workspace.folder));
+// Claude tokens only: Ollama and Free models terminals also write usage, but those are not Claude's.
+ipcMain.handle("usage:get", () =>
+  tokenUsage(workspace.profiles.filter((p) => (p.kind ?? "claude") === "claude").map(configDirOf)).catch((error) => ({ error: String(error?.message ?? error) })),
+);
 ipcMain.handle("note:add", (_event, text: string) =>
   result(() => {
     if (!workspace.folder) throw new Error("Choose a project folder first.");

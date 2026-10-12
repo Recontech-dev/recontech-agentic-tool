@@ -1,0 +1,212 @@
+// Token usage: how many tokens Claude Code used this week, month, year and in total, counted from
+// the usage figures Claude Code writes into its own session transcripts. Transcripts can add up to
+// gigabytes, so each file is read once and afterwards only from where the last read stopped; the
+// counts per message are kept in a small cache file. Nothing is sent anywhere.
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+import { home } from "./paths";
+
+export interface Tokens {
+  input: number;
+  output: number;
+  cacheWrite: number;
+  cacheRead: number;
+  /** All four together. */
+  total: number;
+}
+
+export interface UsageSummary {
+  week: Tokens;
+  month: Tokens;
+  year: Tokens;
+  all: Tokens;
+  /** When the first counted message was sent (ms), or 0 when there is none. */
+  since: number;
+}
+
+/** One answer from the model: when it was sent, and its input, output, cache-write and cache-read tokens. */
+type Entry = [time: number, input: number, output: number, cacheWrite: number, cacheRead: number];
+
+interface FileState {
+  size: number;
+  modified: number;
+  /** How far the file has been read: always the end of a complete line. */
+  offset: number;
+  messages: Record<string, Entry>;
+}
+
+interface Cache {
+  version: number;
+  files: Record<string, FileState>;
+}
+
+const VERSION = 1;
+export const usageFile = () => path.join(home(), "brain", "usage.json");
+
+function loadCache(): Cache {
+  try {
+    const data = JSON.parse(fs.readFileSync(usageFile(), "utf8"));
+    if (data?.version === VERSION && data.files && typeof data.files === "object") return data;
+  } catch {
+    // Missing or unreadable: everything is counted again from the transcripts.
+  }
+  return { version: VERSION, files: {} };
+}
+
+/** Every transcript under a Claude Code folder, including the ones its subagents write. */
+function transcripts(configDir: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory() && depth < 4) walk(full, depth + 1);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) found.push(full);
+    }
+  };
+  walk(path.join(configDir, "projects"), 0);
+  return found;
+}
+
+const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+
+/** The usage on one transcript line, with the key that identifies its message, or null. */
+export function usageOf(line: string): [string, Entry] | null {
+  // Most lines are prompts, tool output and the like; only the model's answers carry usage.
+  if (!line.includes('"usage"')) return null;
+  let data: any;
+  try {
+    data = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const usage = data?.message?.usage;
+  const id = data?.message?.id;
+  const time = Date.parse(data?.timestamp);
+  if (!usage || typeof id !== "string" || !Number.isFinite(time)) return null;
+  // One answer is written as several lines (one per content block), each with the same usage.
+  const key = `${id}:${data.requestId ?? ""}`;
+  const entry: Entry = [time, count(usage.input_tokens), count(usage.output_tokens), count(usage.cache_creation_input_tokens), count(usage.cache_read_input_tokens)];
+  return entry[1] + entry[2] + entry[3] + entry[4] ? [key, entry] : null;
+}
+
+/** Reads a transcript from `start`, up to the end of its last complete line. Returns where it stopped. */
+async function readFrom(file: string, start: number, into: Record<string, Entry>): Promise<number> {
+  const handle = await fs.promises.open(file, "r");
+  try {
+    const chunk = Buffer.alloc(1 << 20);
+    let offset = start;
+    let carry = Buffer.alloc(0);
+    for (;;) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, offset + carry.length);
+      if (!bytesRead) break;
+      const data = Buffer.concat([carry, chunk.subarray(0, bytesRead)]);
+      // Only whole lines are read; a last line without its newline may still be being written.
+      let from = 0;
+      for (let at = data.indexOf(0x0a); at !== -1; at = data.indexOf(0x0a, from)) {
+        const found = usageOf(data.toString("utf8", from, at));
+        if (found && !into[found[0]]) into[found[0]] = found[1];
+        from = at + 1;
+      }
+      offset += from;
+      carry = data.subarray(from);
+    }
+    return offset;
+  } finally {
+    await handle.close();
+  }
+}
+
+let scanning: Promise<UsageSummary> | null = null;
+
+/**
+ * Brings the counts up to date with the transcripts in these Claude Code folders and sums them up.
+ * Calls made while a scan is running share it.
+ */
+export function tokenUsage(configDirs: string[], now = new Date()): Promise<UsageSummary> {
+  scanning ??= scan(configDirs, now).finally(() => (scanning = null));
+  return scanning;
+}
+
+async function scan(configDirs: string[], now: Date): Promise<UsageSummary> {
+  const cache = loadCache();
+  const seen = new Set<string>();
+  let changed = false;
+  for (const dir of new Set(configDirs.map((d) => path.resolve(d)))) {
+    for (const file of transcripts(dir)) {
+      seen.add(file);
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(file);
+      } catch {
+        continue;
+      }
+      const known = cache.files[file];
+      if (known && known.size === stat.size && known.modified === stat.mtimeMs) continue;
+      // Transcripts only grow. One that shrank was rewritten, so it is read again from the start.
+      const state: FileState = known && stat.size >= known.size ? known : { size: 0, modified: 0, offset: 0, messages: {} };
+      try {
+        state.offset = await readFrom(file, state.offset, state.messages);
+      } catch {
+        continue;
+      }
+      state.size = stat.size;
+      state.modified = stat.mtimeMs;
+      cache.files[file] = state;
+      changed = true;
+    }
+  }
+  // A transcript that was deleted still counts: the tokens were used all the same. Only files of
+  // folders that are no longer profiles drop out, as they are not passed in.
+  const wanted = [...new Set(configDirs.map((d) => path.resolve(d, "projects") + path.sep))];
+  for (const file of Object.keys(cache.files)) {
+    if (!seen.has(file) && !wanted.some((root) => file.startsWith(root))) {
+      delete cache.files[file];
+      changed = true;
+    }
+  }
+  if (changed) {
+    fs.mkdirSync(path.dirname(usageFile()), { recursive: true });
+    fs.writeFileSync(usageFile(), JSON.stringify(cache), "utf8");
+  }
+  return summarize(Object.values(cache.files), now);
+}
+
+const empty = (): Tokens => ({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 });
+
+/** Sums the messages per period: this week (from Monday), this month and this year, in local time, and all of it. */
+export function summarize(files: { messages: Record<string, Entry> }[], now = new Date()): UsageSummary {
+  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const week = new Date(day);
+  week.setDate(day.getDate() - ((day.getDay() + 6) % 7));
+  const starts = { week: week.getTime(), month: new Date(now.getFullYear(), now.getMonth(), 1).getTime(), year: new Date(now.getFullYear(), 0, 1).getTime() };
+  const summary: UsageSummary = { week: empty(), month: empty(), year: empty(), all: empty(), since: 0 };
+  // The same answer can be in two transcripts (a resumed session copies its history); it counts once.
+  const counted = new Set<string>();
+  for (const file of files) {
+    for (const [key, [time, input, output, cacheWrite, cacheRead]] of Object.entries(file.messages)) {
+      if (counted.has(key)) continue;
+      counted.add(key);
+      const add = (t: Tokens) => {
+        t.input += input;
+        t.output += output;
+        t.cacheWrite += cacheWrite;
+        t.cacheRead += cacheRead;
+        t.total += input + output + cacheWrite + cacheRead;
+      };
+      add(summary.all);
+      if (time >= starts.year) add(summary.year);
+      if (time >= starts.month) add(summary.month);
+      if (time >= starts.week) add(summary.week);
+      if (!summary.since || time < summary.since) summary.since = time;
+    }
+  }
+  return summary;
+}
