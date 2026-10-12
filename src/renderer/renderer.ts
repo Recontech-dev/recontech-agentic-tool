@@ -2,7 +2,7 @@
 // This file runs in the page, so it uses only browser APIs and window.api from the preload script.
 
 interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama" | "free"; model?: string; role?: string }
-interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number; editorShare?: number; filesOpen?: boolean; voiceOn?: boolean; usageBudget?: { session?: number; week?: number } }
+interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number; editorShare?: number; filesOpen?: boolean; voiceOn?: boolean; split?: SplitNode | null; usageBudget?: { session?: number; week?: number } }
 interface GraphNode { id: string; kind: string; label: string; text: string; detail: string; open: boolean;
   color?: string; resume?: { profile: string; id: string; folder: string }; tag?: string; unfinished?: boolean;
   note?: { folder: string; number: number };
@@ -392,6 +392,7 @@ function makePanel(profile: Profile): void {
   waiting.hidden = true;
   waiting.onclick = () => api.invoke("term:deliver-now", profile.id);
   bar.append(dot, name, hint, eye, spacer, waiting, role, restart, remove);
+  draggableTerminal(bar, profile.id);
   const body = document.createElement("div");
   body.className = "term";
   panel.append(bar, body);
@@ -507,6 +508,196 @@ function fitAll(): void {
   for (const { fit, panel } of terms.values()) if (panel.offsetParent) fit.fit();
 }
 
+/* ---------- Split layout: drag a terminal beside another one, and drag the gaps to resize ---------- */
+
+let splitTree: SplitNode | null = null;
+/** Width of the gap between two panes, which is also the handle that resizes them. Matches .gutter. */
+const GUTTER_PX = 8;
+/** A pane can be resized down to this, but not further: below it a terminal is no use. */
+const MIN_PANE_PX = 140;
+/** How far the pointer moves on a terminal's bar before it counts as a drag rather than a click. */
+const DRAG_START_PX = 6;
+let fitFrame = 0;
+
+/** Refits the terminals at most once per frame while a gap is dragged. */
+function fitSoon(): void {
+  if (!fitFrame) fitFrame = requestAnimationFrame(() => { fitFrame = 0; fitAll(); });
+}
+
+function saveSplit(): void {
+  workspace.split = splitTree;
+  api.invoke("ui:save", { split: splitTree });
+}
+
+/** Puts the panels in place: as the split tree in grid mode, or one after another for tabs. */
+function layoutPanels(): void {
+  const host = $("panels");
+  const ids = workspace.profiles.map((p) => p.id);
+  const grid = workspace.layout !== "tabs" && !!workspace.folder;
+  host.classList.toggle("split", grid);
+  if (!grid) {
+    host.replaceChildren(...ids.map((id) => terms.get(id)!.panel));
+    for (const id of ids) terms.get(id)!.panel.style.flex = "";
+    return;
+  }
+  splitTree = splitReconcile(splitTree ?? workspace.split, ids);
+  host.replaceChildren(...(splitTree ? [buildSplit(splitTree, 1)] : []));
+  if (JSON.stringify(splitTree) !== JSON.stringify(workspace.split ?? null)) saveSplit();
+  soon(fitAll);
+}
+
+function buildSplit(node: SplitNode, size: number): HTMLElement {
+  if (isSplitLeaf(node)) {
+    const panel = terms.get(node.id)!.panel;
+    panel.style.flex = `${size} 1 0`;
+    return panel;
+  }
+  const box = document.createElement("div");
+  box.className = `split ${node.dir}`;
+  box.style.flex = `${size} 1 0`;
+  node.children.forEach((child, i) => {
+    if (i) box.append(makeGutter(node, i - 1, box));
+    box.append(buildSplit(child, node.sizes[i]));
+  });
+  return box;
+}
+
+/** The gap between panes i and i + 1 of a split: dragging it moves room from one to the other. */
+function makeGutter(branch: SplitBranch, i: number, box: HTMLElement): HTMLElement {
+  const gutter = document.createElement("div");
+  gutter.className = `gutter ${branch.dir}`;
+  gutter.title = "Drag to resize";
+  gutter.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    gutter.setPointerCapture(event.pointerId);
+    gutter.classList.add("dragging");
+    const across = branch.dir === "row";
+    const rect = box.getBoundingClientRect();
+    const items = [...box.children].filter((el) => !el.classList.contains("gutter")) as HTMLElement[];
+    const length = (across ? rect.width : rect.height) - (items.length - 1) * GUTTER_PX;
+    const start = across ? event.clientX : event.clientY;
+    const [a, b] = [branch.sizes[i], branch.sizes[i + 1]];
+    const min = Math.min(MIN_PANE_PX / length, (a + b) / 2);
+    const move = (e: PointerEvent) => {
+      const first = Math.max(min, Math.min(a + ((across ? e.clientX : e.clientY) - start) / length, a + b - min));
+      branch.sizes[i] = first;
+      branch.sizes[i + 1] = a + b - first;
+      items[i].style.flex = `${first} 1 0`;
+      items[i + 1].style.flex = `${a + b - first} 1 0`;
+      fitSoon();
+    };
+    const stop = () => {
+      gutter.classList.remove("dragging");
+      gutter.removeEventListener("pointermove", move);
+      gutter.removeEventListener("pointerup", stop);
+      gutter.removeEventListener("pointercancel", stop);
+      fitAll();
+      saveSplit();
+    };
+    gutter.addEventListener("pointermove", move);
+    gutter.addEventListener("pointerup", stop);
+    gutter.addEventListener("pointercancel", stop);
+  });
+  return gutter;
+}
+
+/** The terminal and zone under the pointer while terminal `id` is dragged, or null where it cannot land. */
+function dropAt(x: number, y: number, id: string): { target: string; zone: DropZone; rect: DOMRect } | null {
+  const panel = document.elementFromPoint(x, y)?.closest("#panels .panel") as HTMLElement | null;
+  if (!panel || panel.dataset.id === id) return null;
+  const rect = panel.getBoundingClientRect();
+  const zone = splitZone(x - rect.left, y - rect.top, rect.width, rect.height);
+  // In tabs only one terminal shows, so swapping with it would change nothing visible.
+  if (zone === "center" && workspace.layout === "tabs") return null;
+  return { target: panel.dataset.id!, zone, rect };
+}
+
+function showDropHint(drop: ReturnType<typeof dropAt>): void {
+  const hint = $("dropHint");
+  hint.hidden = !drop;
+  if (!drop) return;
+  const { left, top, width, height } = drop.rect;
+  const area = {
+    left: [left, top, width / 2, height], right: [left + width / 2, top, width / 2, height], top: [left, top, width, height / 2],
+    bottom: [left, top + height / 2, width, height / 2], center: [left, top, width, height],
+  }[drop.zone];
+  Object.assign(hint.style, { left: `${area[0]}px`, top: `${area[1]}px`, width: `${area[2]}px`, height: `${area[3]}px` });
+  hint.textContent = drop.zone === "center" ? "Swap" : "";
+}
+
+/**
+ * Lets terminal `id` be dragged by `handle` (its bar, or its tab) onto another terminal: onto one side
+ * of it to sit beside it, onto its middle to swap places. From tabs, it switches to the split layout.
+ */
+function draggableTerminal(handle: HTMLElement, id: string): void {
+  let draggedAt = 0;
+  // A drag that ends on its own tab is not also a click on it.
+  handle.addEventListener("click", (event) => {
+    if (Date.now() - draggedAt < 300) event.stopImmediatePropagation();
+  }, true);
+  handle.addEventListener("pointerdown", (event) => {
+    const control = (event.target as HTMLElement).closest("button, select, input");
+    if (event.button !== 0 || (control && control !== handle) || !workspace.folder) return;
+    const x0 = event.clientX;
+    const y0 = event.clientY;
+    let dragging = false;
+    let drop: ReturnType<typeof dropAt> = null;
+    const ghost = $("dragGhost");
+    const move = (e: PointerEvent) => {
+      if (!dragging) {
+        if (Math.hypot(e.clientX - x0, e.clientY - y0) < DRAG_START_PX) return;
+        dragging = true;
+        handle.setPointerCapture(e.pointerId);
+        document.body.classList.add("dragging-terminal");
+        terms.get(id)?.panel.classList.add("drag-source");
+        ghost.textContent = workspace.profiles.find((p) => p.id === id)?.name ?? "";
+        ghost.hidden = false;
+      }
+      Object.assign(ghost.style, { left: `${e.clientX + 14}px`, top: `${e.clientY + 14}px` });
+      drop = dropAt(e.clientX, e.clientY, id);
+      showDropHint(drop);
+    };
+    const end = (apply: boolean) => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", escape, true);
+      if (!dragging) return;
+      draggedAt = Date.now();
+      document.body.classList.remove("dragging-terminal");
+      terms.get(id)?.panel.classList.remove("drag-source");
+      ghost.hidden = true;
+      showDropHint(null);
+      if (apply && drop) void dropTerminal(id, drop.target, drop.zone);
+    };
+    const up = () => end(true);
+    const cancel = () => end(false);
+    const escape = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !dragging) return;
+      e.stopPropagation();
+      end(false);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", escape, true);
+  });
+}
+
+async function dropTerminal(id: string, target: string, zone: DropZone): Promise<void> {
+  if (workspace.layout === "tabs") {
+    workspace = await api.invoke("workspace:layout", "grid");
+    $("work").classList.remove("tabs");
+    $("layout").textContent = "Tabs";
+  }
+  const ids = workspace.profiles.map((p) => p.id);
+  splitTree = splitDrop(splitReconcile(splitTree ?? workspace.split, ids), id, target, zone);
+  saveSplit();
+  layoutPanels();
+  select(id);
+}
+
 function select(id: string, focus = true): void {
   active = id;
   for (const [key, { panel }] of terms) panel.classList.toggle("active", key === id);
@@ -558,12 +749,14 @@ function render(): void {
     tab.textContent = profile.name;
     tab.style.borderTop = `2px solid ${profile.color}`;
     tab.onclick = () => select(profile.id);
+    draggableTerminal(tab, profile.id);
     $("tabs").append(tab);
   }
   for (const { panel } of terms.values()) {
     panel.hidden = !workspace.folder;
     (panel.querySelector(".remove") as HTMLElement).hidden = count <= 1;
   }
+  layoutPanels();
   $("needFolder")?.remove();
   if (!workspace.folder) {
     // Claude Code works on a folder. Without one it would start in the home folder and ask whether
@@ -859,6 +1052,7 @@ $("layout").onclick = async () => {
   workspace = await api.invoke("workspace:layout", workspace.layout === "tabs" ? "grid" : "tabs");
   $("work").classList.toggle("tabs", workspace.layout === "tabs");
   $("layout").textContent = workspace.layout === "tabs" ? "Grid" : "Tabs";
+  layoutPanels();
   select(active);
 };
 $("toggle").onclick = () => {

@@ -34,6 +34,23 @@
   #panels { flex:1; min-height:0; display:grid; gap:8px; padding:8px; grid-template-columns:repeat(var(--cols, 1), minmax(0, 1fr)); grid-auto-rows:minmax(0, 1fr); }
   #work.tabs #panels { grid-template-columns:1fr; }
   #work.tabs .panel:not(.active) { display:none; }
+  /* Grid mode: the panels sit in a tree of splits, with a gap between panes that drags to resize them. */
+  #panels.split { display:flex; gap:0; }
+  .split { display:flex; min-width:0; min-height:0; }
+  .split.row { flex-direction:row; }
+  .split.col { flex-direction:column; }
+  .gutter { flex:none; border-radius:3px; }
+  .gutter.row { width:8px; cursor:col-resize; }
+  .gutter.col { height:8px; cursor:row-resize; }
+  .gutter:hover, .gutter.dragging { background:color-mix(in srgb, var(--accent) 55%, transparent); }
+  #panels.split .bar, #tabs button { cursor:grab; }
+  body.dragging-terminal, body.dragging-terminal * { cursor:grabbing !important; user-select:none; }
+  .panel.drag-source { opacity:.45; }
+  #dropHint { position:fixed; z-index:50; pointer-events:none; display:flex; align-items:center; justify-content:center; border:2px solid var(--accent); border-radius:6px;
+    background:color-mix(in srgb, var(--accent) 22%, transparent); color:var(--text); font-weight:600; transition:left .08s, top .08s, width .08s, height .08s; }
+  #dropHint[hidden] { display:none; }
+  #dragGhost { position:fixed; z-index:51; pointer-events:none; padding:3px 10px; border:1px solid var(--accent); border-radius:6px; background:var(--panel); color:var(--text); white-space:nowrap; }
+  #dragGhost[hidden] { display:none; }
   .panel { min-width:0; min-height:0; display:flex; flex-direction:column; background:#000; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
   .panel[hidden] { display:none; }
   .panel.messaged { border-color:var(--topic); box-shadow:0 0 0 1px var(--topic); }
@@ -457,6 +474,9 @@
 <div id="toast" role="status" aria-live="polite" hidden></div>
 <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
 <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+<div id="dropHint" hidden></div>
+<div id="dragGhost" hidden></div>
+<script src="../dist/renderer/split.js"></script>
 <script src="../dist/renderer/renderer.js"></script>
 </body>
 </html>

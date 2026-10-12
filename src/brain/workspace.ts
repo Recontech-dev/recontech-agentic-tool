@@ -66,6 +66,28 @@ export interface Workspace {
    * fills toward. Claude's real limits are not on this computer, so these are the user's own figures.
    */
   usageBudget?: { session?: number; week?: number };
+  /** How the terminals are arranged in grid mode, as the user dragged them: see src/renderer/split.ts. */
+  split?: SplitLayout | null;
+}
+
+/** A terminal (a profile id), or terminals side by side ("row") or stacked ("col") with their shares. */
+export type SplitLayout = { id: string } | { dir: "row" | "col"; sizes: number[]; children: SplitLayout[] };
+
+/**
+ * A layout from the page, kept only if it is well formed and names only these profiles. Anything else
+ * gives null, and the page then falls back to the default grid.
+ */
+export function cleanSplit(value: unknown, ids: string[], depth = 0): SplitLayout | null {
+  if (!value || typeof value !== "object" || depth > 12) return null;
+  const node = value as Record<string, unknown>;
+  if (typeof node.id === "string") return ids.includes(node.id) ? { id: node.id } : null;
+  if ((node.dir !== "row" && node.dir !== "col") || !Array.isArray(node.children) || !Array.isArray(node.sizes)) return null;
+  if (!node.children.length || node.children.length > 12 || node.sizes.length !== node.children.length) return null;
+  const sizes = node.sizes.map(Number);
+  if (sizes.some((n) => !Number.isFinite(n) || n <= 0 || n > 1)) return null;
+  const children = node.children.map((child) => cleanSplit(child, ids, depth + 1));
+  if (children.some((child) => !child)) return null;
+  return { dir: node.dir, sizes, children: children as SplitLayout[] };
 }
 
 /** Claude Code folders that already exist, such as ~/.claude-account1 made by an earlier multi-terminal setup. */

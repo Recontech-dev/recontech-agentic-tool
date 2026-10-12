@@ -671,7 +671,7 @@ ipcMain.handle("profile:rename", (_event, id: string, name: string) =>
     return workspace;
   }),
 );
-ipcMain.handle("ui:save", (_event, ui: { fontSize?: number; brainWidth?: number; editorShare?: number; filesOpen?: boolean; voiceOn?: boolean; usageBudget?: { session?: number; week?: number } }) => {
+ipcMain.handle("ui:save", (_event, ui: { fontSize?: number; brainWidth?: number; editorShare?: number; filesOpen?: boolean; voiceOn?: boolean; split?: unknown; usageBudget?: { session?: number; week?: number } }) => {
   if (ui?.usageBudget && typeof ui.usageBudget === "object") {
     // 0 (or anything that is not a sensible count) clears that budget.
     const budget = (n: unknown) => (Number(n) > 0 && Number(n) <= 1e13 ? Math.round(Number(n)) : undefined);
@@ -680,6 +680,7 @@ ipcMain.handle("ui:save", (_event, ui: { fontSize?: number; brainWidth?: number;
   if (Number(ui?.fontSize) >= 9 && Number(ui?.fontSize) <= 24) workspace.fontSize = Number(ui.fontSize);
   if (Number(ui?.brainWidth) >= 240 && Number(ui?.brainWidth) <= 1200) workspace.brainWidth = Math.round(Number(ui.brainWidth));
   if (Number(ui?.editorShare) >= 0.2 && Number(ui?.editorShare) <= 0.85) workspace.editorShare = Number(ui.editorShare);
+  if (ui && "split" in ui) workspace.split = ws.cleanSplit(ui.split, workspace.profiles.map((p) => p.id));
   if (typeof ui?.filesOpen === "boolean") workspace.filesOpen = ui.filesOpen;
   if (typeof ui?.voiceOn === "boolean") workspace.voiceOn = ui.voiceOn;
   ws.save(workspace);

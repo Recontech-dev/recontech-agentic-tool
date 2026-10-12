@@ -54,7 +54,7 @@ An **Offline** badge appears in the top bar when Claude cannot be reached; Claud
 
 Buttons: **↻** restarts a terminal, **✕** removes a profile (its sign-in and past sessions stay on disk), **Tabs/Grid** switches the layout, **Hide brain** gives the terminals the whole window.
 
-A file opened from the Files panel shows above the terminals; drag the bar between them to share the height.
+**Arranging terminals:** drag a terminal by its title bar onto another terminal. A highlight shows where it will go: drop it on one side to put it there, beside or above or below the other one, or in the middle to swap the two. Drag the gap between two terminals to resize them. Dragging a tab onto the open terminal works the same way and switches to the grid. The arrangement is remembered. A file opened from the Files panel shows above the terminals; drag the bar between them to share the height.
 
 ### Roles
 
