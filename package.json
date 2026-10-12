@@ -1,6 +1,6 @@
 {
   "name": "recontech-agentic-tool",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Claude Code workspace: several Claude Code profiles side by side, sharing one local brain built from your past sessions",
   "license": "MIT",
   "author": "Earl Batenga",
