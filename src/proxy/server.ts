@@ -7,6 +7,9 @@ import * as http from "node:http";
 
 import { AnthropicRequest, StreamTranslator, estimateTokens, toAnthropicMessage, toOpenAI } from "./translate";
 
+/** The largest request body read, so a stuck or hostile client cannot fill the memory. */
+const MAX_BODY = 64 * 1024 * 1024;
+
 export interface Provider {
   id: string;
   name: string;
@@ -141,7 +144,15 @@ export class FreeProxy {
       return this.fail(res, 404, "not_found_error", "Not supported by the free-models bridge.");
     }
     const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(chunk as Buffer);
+    let size = 0;
+    for await (const chunk of req) {
+      size += (chunk as Buffer).length;
+      if (size > MAX_BODY) {
+        res.setHeader("connection", "close");
+        return this.fail(res, 413, "request_too_large", "The request is too large.");
+      }
+      chunks.push(chunk as Buffer);
+    }
     let request: AnthropicRequest;
     try {
       request = JSON.parse(Buffer.concat(chunks).toString("utf8"));

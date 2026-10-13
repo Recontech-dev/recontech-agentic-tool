@@ -107,6 +107,7 @@
   .usagebar .limit.ok::before { color:var(--open); }
   .usagebar .limit.near { color:var(--topic); }
   .usagebar .limit.reached { color:#ff9b9b; font-weight:600; }
+  .usagebar .limit.unknown::before { color:var(--dim); }
   /* Fills toward the session and weekly budgets the user set under Tokens used. */
   .usagebar .meter { display:inline-block; width:64px; height:5px; margin-right:6px; vertical-align:middle; border-radius:3px; background:var(--line); overflow:hidden; cursor:pointer; }
   .usagebar .meter i { display:block; height:100%; background:var(--accent); border-radius:3px; }
@@ -122,7 +123,17 @@
   #usageAccounts td.limit .meter i { display:block; height:100%; background:var(--accent); }
   #usageAccounts td.limit .meter.near i { background:var(--topic); }
   #usageAccounts td.limit .meter.over i { background:#ff9b9b; }
-  @container (max-width:400px) { #usageAccounts td.limit .meter { display:none; } #usageAccounts th:nth-child(6), #usageAccounts td:nth-child(6) { display:none; } }
+  /* Narrower, the table keeps what matters most: each account's limits and its total. Month and Year go
+     first, then the week's tokens (the tiles above still show both for all accounts together). */
+  #usageAccounts th .short { display:none; }
+  @container (max-width:520px) { #usageAccounts :is(th, td):is(:nth-child(5), :nth-child(6)) { display:none; } }
+  @container (max-width:400px) { #usageAccounts :is(th, td):nth-child(4) { display:none; } }
+  @container (max-width:300px) {
+    #usageAccounts td.limit .meter { display:none; }
+    #usageAccounts { font-size:11px; }
+    #usageAccounts th .long { display:none; }
+    #usageAccounts th .short { display:inline; }
+  }
   #usageBudget { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; padding:0 8px 8px; font-size:11.5px; color:var(--dim); }
   #usageBudget label { display:flex; gap:5px; align-items:center; }
   #usageBudget input { width:72px; padding:2px 6px; font-size:11.5px; }
@@ -264,9 +275,15 @@
   .usage-tile.all .value { color:var(--accent); }
   /* Two by two when the brain panel is narrow, whatever the window's width. */
   #usage { container-type:inline-size; }
-  @container (max-width:400px) { #usageTiles { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+  @container (max-width:560px) { #usageTiles { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
   /* It never takes over the brain column: at most a third of it, and on short windows just the numbers. */
   #usage[open] { max-height:33%; overflow:auto; }
+  /* While search results are shown they get the room: the token counts, the legend and the detail text
+     step aside and the picture keeps a small strip, until the search is cleared. */
+  #brain:has(#results:not(:empty)) #usage { display:none; }
+  #brain:has(#results:not(:empty)) #results { max-height:none; flex:1 1 auto; }
+  #brain:has(#results:not(:empty)) #map { flex:0 0 120px; }
+  #brain:has(#results:not(:empty)) :is(#legend, #detail) { display:none; }
   @media (max-height:720px) {
     #usageTiles { gap:4px; padding:0 6px 6px; }
     .usage-tile { padding:3px 6px; }
@@ -275,9 +292,9 @@
     #usage summary { padding:4px 8px; }
   }
   /* Recon: a HUD-style card, the orb in the middle and the conversation under it. */
-  /* It sticks to the bottom of the brain column, so it stays in view however full the column above it is. */
+  /* It is the last part of the brain column, never laid over it: the picture gives up height for it. */
   #voice { margin:8px; border:1px solid var(--line); border-radius:10px; padding:8px 10px 10px; display:flex; flex-direction:column; gap:6px;
-           flex:none; max-height:50%; overflow:auto; position:sticky; bottom:8px; z-index:2; box-shadow:0 -6px 18px rgba(0,0,0,.35);
+           flex:none; max-height:50%; overflow:auto;
            background:radial-gradient(ellipse at 50% 28%, rgba(79,216,255,.08), transparent 65%), var(--panel); }
   #voice[hidden] { display:none; }
   #voice.talk { border-color:rgba(110,160,255,.45); }
@@ -298,6 +315,17 @@
   #voiceReply { border-top:1px solid var(--line); padding-top:6px; display:flex; flex-direction:column; gap:6px; }
   #voiceReply[hidden] { display:none; }
   #voiceReplyText { font-size:12.5px; max-height:110px; overflow:auto; white-space:pre-wrap; }
+  /* Waiting for "Recon" can last all day, so the card shrinks to one slim row (small orb, state, buttons)
+     and gives the brain column back; the big orb and the conversation come back while talking. */
+  #voice:not(.talk) { flex-direction:row; flex-wrap:wrap; align-items:center; gap:4px 8px; padding:6px 8px; max-height:40%; overflow:hidden auto; }
+  #voice:not(.talk) #voiceStage { order:-1; flex-direction:row; gap:6px; margin:0; }
+  #voice:not(.talk) #voiceOrb { width:36px; height:36px; }
+  #voice:not(.talk) #voiceHead { flex:1; min-width:0; }
+  #voice:not(.talk) #voiceHead b { display:none; }
+  #voice:not(.talk) :is(#voiceHint, #voiceLog) { display:none; }
+  #voice:not(.talk) #voiceReply { flex-basis:100%; }
+  /* The emoji draws in red, which reads as an error; the buttons take the panel's own colours. */
+  #voiceHead .icon { filter:grayscale(1) brightness(1.5); }
   #voiceReply .row { display:flex; gap:8px; justify-content:flex-end; }
   #voiceHint { font-size:11.5px; text-align:center; }
   /* Once talking, the how-to is known; the room goes to the conversation. */
@@ -366,7 +394,7 @@
     <button id="layout">Tabs</button>
     <button id="toggle">Hide brain</button>
   </div>
-  <button id="voiceToggle" title="Recon, the local voice assistant. While this is lit, say &quot;Recon&quot; and talk: what you say goes to your Manager terminal and its answers are read out, until you say &quot;that&apos;s all&quot;. Say &quot;turn off the mic&quot; or click here to switch it off; the choice is remembered.">🎙 Recon</button>
+  <button id="voiceToggle" title="Recon, the local voice assistant. It is off, and the microphone closed, until you click here. While this is lit, say &quot;Recon&quot; and talk: what you say goes to your Manager terminal and its answers are read out, until you say &quot;that&apos;s all&quot;. Say &quot;turn off the mic&quot; or click here to switch it off; the choice is remembered.">🎙 Recon</button>
   <span class="divider"></span>
   <!-- Adding terminals: the main action of the bar. -->
   <button id="free" title="A special terminal that runs Claude Code on free AI providers, for when a Claude limit is hit">Free models</button>
@@ -448,7 +476,7 @@
       <summary title="Claude tokens used by every Claude profile in this app, counted from Claude Code's own session files on this computer"><span>Tokens used</span><span id="usageState" class="dim"></span></summary>
       <div id="usageTiles"></div>
       <table id="usageAccounts" hidden title="Session and Week: share of each account's plan limit used, from Anthropic (the same as the Claude app). The token columns are counted from Claude Code on this computer.">
-        <thead><tr><th>Account</th><th>Session</th><th>Week</th><th>Tokens: week</th><th>Month</th><th>Year</th><th>Total</th></tr></thead>
+        <thead><tr><th><span class="long">Account</span><span class="short">Acct</span></th><th title="Share of the 5-hour session limit used"><span class="long">Session</span><span class="short">Sess</span></th><th title="Share of the weekly limit used"><span class="long">Week</span><span class="short">Wk</span></th><th title="Tokens used this week">Week tok.</th><th title="Tokens used this month">Month</th><th title="Tokens used this year">Year</th><th title="All tokens counted"><span class="long">Total</span><span class="short">Tot</span></th></tr></thead>
         <tbody></tbody>
       </table>
       <div id="usageBudget" title="The bar under each Claude terminal fills toward these. Use your plan's figures, or what you want to stay under; leave empty for no bar.">

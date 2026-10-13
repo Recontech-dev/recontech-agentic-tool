@@ -22,13 +22,16 @@ export function cleanupTranscript(raw: string): string {
 }
 
 /**
- * "Recon", as Whisper tiny.en tends to hear it: "recon", "reckon", "re-con", "rekon" or "raccoon",
- * optionally after "hey" or "okay", and after "hey" also just "con". Only at the very start (after a
- * filler or two), so "I reckon…" or "hey, can you…" never wakes the assistant.
+ * "Recon", as Whisper tiny.en tends to hear it: "recon", "reckon", "re-con", "rekon", "recom" or
+ * "raccoon", and, said with a longer "ee" as British voices do, "reekon", "reacon", "reeken" or
+ * "reakin'"; optionally after "hey" or "okay", and after "hey" also just "con". Only at the very start
+ * (after a filler or two), so "I reckon…" or "hey, can you…" never wakes the assistant. In noise "hey"
+ * can lose its h and come out as "a"; "A recon" counts only when it stands alone ("A recon, open…"),
+ * since "A recon mission…" is ordinary talk.
  */
-const RECON = String.raw`(?:re[\s-]?(?:c|k|ck|kk)on|rac+o+n)`;
+const RECON = String.raw`(?:r(?:e|ee|ea|ie)[\s-]?(?:c|k|ck|kk)[oaie][nm]|rac+o+n)`;
 const WAKE_WORD = new RegExp(
-  String.raw`^[\s"'.,!?-]*(?:(?:um+|uh+|erm+)\b[\s,.]*)*(?:(?:hey|hay|heh)\b[\s,.!-]*(?:${RECON}|con|kon)|(?:(?:ok|okay)\b[\s,.!-]*)?${RECON})\b[\s"'.,!?:;-]*`,
+  String.raw`^[\s"'.,!?-]*(?:(?:um+|uh+|erm+)\b[\s,.]*)*(?:(?:hey|hay|heh)\b[\s,.!-]*(?:${RECON}|con|kon)|(?:(?:ok|okay)\b[\s,.!-]*)?${RECON}|a[\s,]+${RECON}(?=\s*(?:[,.!?:;]|$)))\b[\s"'.,!?:;-]*`,
   "i",
 );
 
@@ -66,17 +69,36 @@ export function voiceCommand(transcript: string): "off" | "sleep" | null {
 
 /**
  * A Manager's message made fit to be read aloud: no Markdown marks, code blocks or long links, which
- * speech synthesis would spell out symbol by symbol.
+ * speech synthesis would spell out symbol by symbol. A heading, list item or table row ends with a
+ * pause, as it would when read out by a person; ordinary lines just run on, since prose can be wrapped.
  */
 export function speakable(text: string): string {
-  return String(text ?? "")
-    .replace(/```[\s\S]*?```/g, " (code shown on screen) ")
+  const lines = String(text ?? "")
+    .replace(/```[\s\S]*?```/g, "\n(code shown on screen)\n")
     .replace(/`([^`]*)`/g, "$1")
+    // [label](address) and images: only the label is read.
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/https?:\/\/\S+/g, "a link")
-    .replace(/^\s*(?:#+|[-*•]|\d+[.)])\s+/gm, "")
-    .replace(/[*_~#>|]+/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+    .split("\n");
+  const spoken: string[] = [];
+  for (const raw of lines) {
+    // A table's rule row (|---|:--:|) says nothing.
+    if (/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(raw)) continue;
+    const row = /^\s*\|.*\|\s*$/.test(raw);
+    const item = row || /^\s*(?:#+|[-*•]|\d+[.)])\s+/.test(raw);
+    let line = row ? raw.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim()).filter(Boolean).join(", ") : raw;
+    line = line
+      .replace(/^\s*(?:#+|[-*•]|\d+[.)])\s+/, "")
+      .replace(/~(?=\d)/g, "about ")
+      // Emphasis marks go, but the underscores inside names like voice_reply stay.
+      .replace(/(^|[^\w])_{1,2}([^_\n]+?)_{1,2}(?=[^\w]|$)/g, "$1$2")
+      .replace(/[*~#>|]+/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!line) continue;
+    spoken.push(item && !/[.!?:;,]$/.test(line) ? `${line}.` : line);
+  }
+  return spoken.join(" ");
 }
 
 /**
@@ -88,7 +110,7 @@ export function speakable(text: string): string {
 export function openProjectRequest(transcript: string): { name: string; explicit: boolean } | null {
   const text = String(transcript ?? "").replace(/[^\w\s'.-]/g, " ").replace(/\s+/g, " ").trim().replace(/[.\s]+$/, "");
   if (!text || text.split(" ").length > MAX_COMMAND_WORDS) return null;
-  const match = /^(?:(?:please|can you|could you)\s+)?(?:open(?:\s+up)?|switch\s+to|go\s+to|load|work\s+(?:on|in))\s+(?:(?:the|my|a|an|another|other)\s+)?(.*?)(?:\s+(project|folder|repo|repository))?(?:\s+(?:folder|please))?$/i.exec(text);
+  const match = /^(?:(?:please|can you|could you)\s+)?(?:open(?:\s+up)?|switch(?:ed)?\s+to|go\s+to|load|work\s+(?:on|in))\s+(?:(?:the|my|a|an|another|other)\s+)?(.*?)(?:\s+(project|folder|repo|repository))?(?:\s+(?:folder|please))?$/i.exec(text);
   if (!match) return null;
   const name = match[1].replace(/^(?:project|folder)\s+/i, "").trim();
   const explicit = !!match[2] || /^(?:project|folder)\b/i.test(match[1]);
@@ -116,7 +138,8 @@ function editDistance(a: string, b: string): number {
 export function matchProject(spoken: string, folders: string[]): string | null {
   const want = squash(spoken);
   if (!want) return null;
-  const named = folders.map((folder) => ({ folder, name: squash(folder.split(/[\/]+/).filter(Boolean).pop() ?? "") })).filter((f) => f.name);
+  // Only the folder's own name counts, never the folders above it; Windows paths use backslashes.
+  const named = folders.map((folder) => ({ folder, name: squash(folder.split(/[\\/]+/).filter(Boolean).pop() ?? "") })).filter((f) => f.name);
   const exact = named.find((f) => f.name === want);
   if (exact) return exact.folder;
   const partial = named.filter((f) => want.length >= 3 && (f.name.startsWith(want) || f.name.includes(want)));

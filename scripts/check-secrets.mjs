@@ -6,18 +6,25 @@ import { readFileSync, statSync } from "node:fs";
 const TOKEN = new RegExp([
   "sk-[A-Za-z0-9_-]{20,}", "gsk_[A-Za-z0-9]{20,}", "csk-[A-Za-z0-9]{20,}", "AIza[0-9A-Za-z_-]{35}",
   "gh[pousr]_[A-Za-z0-9]{36,}", "github_pat_[A-Za-z0-9_]{20,}", "AKIA[0-9A-Z]{16}", "xox[baprs]-[A-Za-z0-9-]{10,}",
+  "hf_[A-Za-z0-9]{30,}", "npm_[A-Za-z0-9]{36}", "[sr]k_live_[A-Za-z0-9]{20,}", "glpat-[A-Za-z0-9_-]{20,}", "ya29\\.[A-Za-z0-9_-]{20,}",
+  "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}",
   "-----BEGIN [A-Z ]*PRIVATE KEY-----",
 ].join("|"), "g");
 const FORBIDDEN_DIRS = new Set([".recontech-agentic-tool", ".agentic-lazy-tool", "memory", "sessions", "profiles", ".claude", "recontech-agentic-tool-model", "agentic-lazy-tool-model"]);
 const MAX_BYTES = 10 * 1024 * 1024;
-const FORBIDDEN_NAMES = new Set([".env", "config.json", "workspace.json", "notes.jsonl", ".credentials.json", "CLAUDE.md"]);
+const FORBIDDEN_NAMES = new Set([
+  ".env", ".env.local", ".env.production", "config.json", "workspace.json", "notes.jsonl", ".credentials.json", "CLAUDE.md",
+  "free-keys.json", "control.json", "id_rsa", "id_ed25519", "id_ecdsa",
+]);
+// Key and certificate files, whatever they are called.
+const FORBIDDEN_EXT = /\.(pem|key|pfx|p12)$/i;
 
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).split("\n").filter(Boolean);
 const files = process.argv.includes("--all") ? git("ls-files") : git("diff", "--cached", "--name-only", "--diff-filter=ACM");
 const problems = [];
 for (const name of files) {
   const parts = name.split("/");
-  if (parts.slice(0, -1).some((p) => FORBIDDEN_DIRS.has(p)) || FORBIDDEN_NAMES.has(parts.at(-1))) {
+  if (parts.slice(0, -1).some((p) => FORBIDDEN_DIRS.has(p)) || FORBIDDEN_NAMES.has(parts.at(-1)) || FORBIDDEN_EXT.test(name)) {
     problems.push(`${name}: personal data file`);
     continue;
   }

@@ -54,6 +54,10 @@ test("secrets are found and plain text is left alone", () => {
   assert.deepEqual(findTokens("gsk_" + "b".repeat(30)), ["gsk_" + "b".repeat(30)]);
   assert.equal(redact("password: hunter2secret"), "password: [secret removed]");
   assert.equal(redact("The token limit is 4096."), "The token limit is 4096.");
+  assert.equal(redact("hf_" + "c".repeat(34)), "[secret removed]");
+  assert.equal(redact("auth eyJ" + "a".repeat(20) + ".eyJ" + "b".repeat(20) + "." + "c".repeat(20)), "auth [secret removed]");
+  assert.equal(redact("DATABASE_URL=postgres://app:s3cretpw@db.local:5432/shop"), "DATABASE_URL=postgres://app:[secret removed]@db.local:5432/shop");
+  assert.equal(redact("see https://example.com/docs and git@github.com:me/repo"), "see https://example.com/docs and git@github.com:me/repo");
 });
 
 test("a Claude Code transcript becomes a session with title, prompts and words", () => {

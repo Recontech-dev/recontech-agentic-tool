@@ -26,6 +26,8 @@ export interface PlanLimits {
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 /** Anthropic is asked at most this often per account; the figures move slowly. */
 const FRESH_MS = 3 * 60_000;
+/** How soon a failed first ask is tried again. */
+const RETRY_MS = 30_000;
 
 const cache = new Map<string, { limits: PlanLimits | { error: string }; at: number }>();
 
@@ -79,6 +81,8 @@ export async function planLimits(configDir: string, now = Date.now()): Promise<P
     cache.set(dir, { limits: known.limits, at: now });
     return known.limits;
   }
-  cache.set(dir, { limits, at: now });
+  // With no figures to fall back on, a failure (often a hiccup right at startup) is asked again at the
+  // next refresh instead of standing for the full time.
+  cache.set(dir, { limits, at: "error" in limits ? now - FRESH_MS + RETRY_MS : now });
   return limits;
 }

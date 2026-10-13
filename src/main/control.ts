@@ -8,6 +8,9 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 
+/** The largest request body read, so a stuck or hostile client cannot fill the memory. */
+const MAX_BODY = 1024 * 1024;
+
 export interface TerminalInfo {
   name: string;
   kind: string;
@@ -86,7 +89,15 @@ export class Control {
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     if (req.method !== "POST" || !this.allowed(req)) return this.reply(res, 401, { error: "not allowed" });
     const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(chunk as Buffer);
+    let size = 0;
+    for await (const chunk of req) {
+      size += (chunk as Buffer).length;
+      if (size > MAX_BODY) {
+        res.setHeader("connection", "close");
+        return this.reply(res, 413, { error: "request too large" });
+      }
+      chunks.push(chunk as Buffer);
+    }
     let body: any = {};
     try {
       body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");

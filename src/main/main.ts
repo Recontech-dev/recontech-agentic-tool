@@ -1,6 +1,6 @@
 // The Electron main process: one window with a terminal per Claude Code profile and the brain beside them.
 
-import { app, BrowserWindow, dialog, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -27,12 +27,20 @@ import { Inbox } from "./inbox";
 import { PasteMode, bracketedPaste } from "./paste";
 import { VOICE_REPLY_MS, VoiceReplies } from "./voice";
 import { FreeModels } from "./free";
+import { makePrivate } from "./privacy";
 import { PRESETS } from "../proxy/server";
 
 const BRAIN_REFRESH_MS = 10_000;
 const NETWORK_CHECK_MS = 30_000;
 /** The Smart sorting model is about 1.7 GB; this leaves room for the download and the rest of the disk. */
 const MODEL_SPACE_BYTES = 2.5 * 1024 ** 3;
+
+// The installed app refuses to start with a debugging port: anything on this computer could then
+// drive the page, and through it type into every terminal. Development runs keep it for testing.
+if (app.isPackaged && ["remote-debugging-port", "remote-debugging-pipe", "inspect", "inspect-brk", "remote-allow-origins"].some((s) => app.commandLine.hasSwitch(s))) {
+  app.exit(1);
+  process.exit(1);
+}
 
 // Screenshots taken for automated checks miss GPU-drawn content, so those runs draw in software.
 if (process.env.ALT_SCREENSHOT) app.disableHardwareAcceleration();
@@ -58,6 +66,11 @@ if (earlier && path.resolve(home()).toLowerCase() !== path.resolve(earlier).toLo
 // while test/screenshot runs that set ALT_HOME to their own temp folder get their own lock and
 // never collide with the real app or with each other.
 app.setPath("userData", path.join(home(), "electron-userdata"));
+// A native crash in the app (main, page, GPU) is caught and written as a dump under
+// electron-userdata\Crashpad, inside the private data folder, instead of ending in a bare Windows
+// error box. Nothing is ever sent anywhere.
+crashReporter.start({ uploadToServer: false, compress: true });
+
 // A second launch would share this home's workspace.json and sign-ins, and both instances would
 // write to it, so only one runs; the second hands off to the first and quits.
 if (!app.requestSingleInstanceLock()) {
@@ -490,6 +503,9 @@ function createWindow(): void {
       preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true,
       // A hidden window normally stops drawing; automated screenshots need it to keep going.
       backgroundThrottling: !process.env.ALT_SCREENSHOT,
+      // The installed app has no developer tools: they would show the page's state and let anyone run code in it.
+      devTools: !app.isPackaged,
+      spellcheck: false,
     },
   });
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -501,7 +517,23 @@ function createWindow(): void {
     });
     if (answer === 0) event.preventDefault();
   });
+  // A crashed page would leave a blank window: it is loaded again, unless it keeps crashing.
+  const crashes: number[] = [];
+  win.webContents.on("render-process-gone", (_event, details) => {
+    if (details.reason === "clean-exit" || !win || win.isDestroyed()) return;
+    console.error(`[window] the page stopped (${details.reason}, exit code ${details.exitCode})`);
+    crashes.push(Date.now());
+    while (crashes.length && Date.now() - crashes[0] > 60_000) crashes.shift();
+    if (crashes.length < 3) return void win.webContents.reload();
+    dialog.showMessageBox(win, {
+      type: "error", title: "The window keeps stopping",
+      message: "The app's window stopped working three times in a minute, so it was not loaded again.",
+      detail: `Close the app and start it again. A crash report was saved in ${path.join(app.getPath("userData"), "Crashpad")}; nothing was sent anywhere.`,
+    });
+  });
   win.webContents.on("will-navigate", (event) => event.preventDefault());
+  win.webContents.on("will-redirect", (event) => event.preventDefault());
+  win.webContents.on("will-attach-webview", (event) => event.preventDefault());
   // A reload asks for every terminal again, so the old shells go first.
   win.webContents.on("did-start-loading", () => [...terminals.keys()].forEach(stopTerminal));
   win.webContents.on("did-finish-load", () => {
@@ -537,6 +569,32 @@ function result<T>(work: () => T): T | { error: string } {
   }
 }
 
+/**
+ * True when an IPC message comes from the app's own page in the main window. The page cannot
+ * navigate or open windows, so nothing else should ever send one; this is the last line if it did.
+ */
+function fromPage(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean {
+  const frame = event.senderFrame;
+  return !!win && !win.isDestroyed() && event.sender === win.webContents && !!frame &&
+    frame.processId === win.webContents.mainFrame.processId && frame.routingId === win.webContents.mainFrame.routingId &&
+    frame.url.startsWith("file:");
+}
+
+// Every channel below goes through these, so a message from anywhere but the app's page is refused.
+{
+  const handle = ipcMain.handle.bind(ipcMain);
+  const on = ipcMain.on.bind(ipcMain);
+  ipcMain.handle = (channel, listener) =>
+    handle(channel, (event, ...args) => {
+      if (!fromPage(event)) throw new Error(`blocked: ${channel}`);
+      return listener(event, ...args);
+    });
+  ipcMain.on = (channel, listener) =>
+    on(channel, (event, ...args) => {
+      if (fromPage(event)) listener(event, ...args);
+    });
+}
+
 ipcMain.handle("workspace:get", () => workspace);
 // Split in two so the restart-every-terminal confirm (asked by the renderer in between) only
 // has to happen once a folder was actually chosen, not before the picker even opens.
@@ -545,7 +603,18 @@ ipcMain.handle("workspace:pick-folder", async () => {
   return choice.canceled ? null : choice.filePaths[0] || null;
 });
 ipcMain.handle("workspace:set-folder", (_event, folder: string) => {
-  workspace.folder = String(folder);
+  // Every terminal starts there and the Files panel may read and write inside it, so it must be a real folder.
+  // A network path (\\server\share) is refused: only looking at one makes Windows sign in to that computer.
+  const wanted = String(folder ?? "");
+  const isFolder = () => {
+    try {
+      return !!fs.statSync(wanted, { throwIfNoEntry: false })?.isDirectory();
+    } catch {
+      return false;
+    }
+  };
+  if (!path.isAbsolute(wanted) || /^[\\/]{2}/.test(wanted) || !isFolder()) return workspace;
+  workspace.folder = path.resolve(wanted);
   ws.save(workspace);
   pushGraph(true);
   return workspace;
@@ -795,7 +864,10 @@ ipcMain.handle("free:key-page", (_event, id: string) => {
 });
 ipcMain.handle("sorting:get", () => sortingStatus);
 ipcMain.handle("sorting:toggle", () => toggleSorting());
-ipcMain.handle("mic:transcribe", (_event, pcm: number[]) => transcribe(Array.isArray(pcm) ? pcm.map(Number) : []));
+/** The longest recording that is transcribed: two minutes at 16 kHz. Anything longer is cut, so the page cannot tie the worker up. */
+const MAX_SAMPLES = 16_000 * 120;
+ipcMain.handle("mic:transcribe", (_event, pcm: number[]) =>
+  transcribe(Array.isArray(pcm) ? pcm.slice(0, MAX_SAMPLES).map((x) => (Number.isFinite(Number(x)) ? Number(x) : 0)) : []));
 
 /**
  * Reads one thing the user said: whether it starts with the wake word "Recon" (and what followed it),
@@ -847,7 +919,7 @@ ipcMain.handle("session:resume", (_event, ref: { profile: string; id: string; fo
   return { id: profile.id };
 });
 ipcMain.on("term:start", (_event, id: string, cols: number, rows: number) => {
-  if (cols > 0 && rows > 0) sizes.set(String(id), { cols: Math.floor(cols), rows: Math.floor(rows) });
+  if (cols > 0 && rows > 0 && cols <= 2000 && rows <= 1000) sizes.set(String(id), { cols: Math.floor(cols), rows: Math.floor(rows) });
   startTerminal(String(id));
 });
 ipcMain.on("term:input", (_event, id: string, data: string) => {
@@ -873,14 +945,23 @@ ipcMain.on("voice:listening", (_event, on: boolean) => {
 // The "message waiting" button in a terminal's title bar: the user wants it now, typing or not.
 ipcMain.handle("term:deliver-now", (_event, id: string) => deliverWaiting(String(id), true));
 ipcMain.on("term:resize", (_event, id: string, cols: number, rows: number) => {
-  if (!(cols > 0 && rows > 0)) return;
+  if (!(cols > 0 && rows > 0 && cols <= 2000 && rows <= 1000)) return;
   sizes.set(String(id), { cols: Math.floor(cols), rows: Math.floor(rows) });
   terminals.get(String(id))?.resize(Math.floor(cols), Math.floor(rows));
 });
 
 app.whenReady().then(async () => {
+  // Off the user's folder (the app installed on D:, say) the data folder would be open to every user.
+  void makePrivate(home());
+  void pruneCrashReports();
   // Electron denies permission requests (microphone included) unless something explicitly answers them.
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => callback(permission === "media"));
+  // Only the app's own page gets anything, and that is the microphone (for Recon and push-to-talk): no camera, no screen.
+  const ownPage = (contents: Electron.WebContents | null) => !!contents && !!win && !win.isDestroyed() && contents === win.webContents;
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const types = (details as { mediaTypes?: string[] }).mediaTypes ?? [];
+    callback(permission === "media" && ownPage(contents) && types.every((type) => type === "audio"));
+  });
+  session.defaultSession.setPermissionCheckHandler((contents, permission) => permission === "media" && ownPage(contents));
   await free.start();
   await control.listen();
   control.writeAddress(controlFile());
@@ -898,9 +979,30 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on("window-all-closed", () => {
+/** Only the newest few crash reports are kept; they are for looking into a recent crash, not a history. */
+async function pruneCrashReports(keep = 5): Promise<void> {
+  const dir = path.join(app.getPath("crashDumps"), "reports");
+  try {
+    const dumps = await Promise.all((await fs.promises.readdir(dir)).filter((name) => name.endsWith(".dmp"))
+      .map(async (name) => ({ file: path.join(dir, name), at: (await fs.promises.stat(path.join(dir, name))).mtimeMs })));
+    dumps.sort((a, b) => b.at - a.at);
+    await Promise.all(dumps.slice(keep).map(({ file }) => fs.promises.rm(file, { force: true })));
+  } catch {
+    // No reports folder yet: nothing has crashed.
+  }
+}
+
+/** Stops every terminal and worker. Their consoles would otherwise keep the app from exiting. */
+function shutDown(): void {
   stopSorter();
   transcriber?.kill();
   [...terminals.keys()].forEach(stopTerminal);
+}
+
+app.on("window-all-closed", () => {
+  shutDown();
   app.quit();
 });
+// Quitting by app.quit() (installing an update, the screenshot run) closes the window without a
+// window-all-closed event, so the same clean-up runs here too.
+app.on("will-quit", shutDown);

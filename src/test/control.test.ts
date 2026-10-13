@@ -57,6 +57,7 @@ test("terminals can be listed, read and messaged, with a limit on back-and-forth
   assert.equal(blocked.status, 429);
   assert.match(blocked.data.error, /let the user decide/);
   assert.equal((await call("/send", { from: "Work", to: "Account 1", message: "the other direction has its own count" })).status, 200);
+  assert.equal((await call("/send", { from: "Work", to: "Account 1", message: "x".repeat(2 * 1024 * 1024) })).status, 413, "an oversized request is refused, not read into memory");
   control.close();
 });
 

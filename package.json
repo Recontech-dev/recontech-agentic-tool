@@ -68,6 +68,14 @@
       "guid": "f2f54427-a522-50b4-bf4b-3bd976b1dd7d"
     },
     "npmRebuild": false,
+    "electronFuses": {
+      "runAsNode": true,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "onlyLoadAppFromAsar": true,
+      "enableEmbeddedAsarIntegrityValidation": true
+    },
     "publish": {
       "provider": "github",
       "owner": "erlruben",

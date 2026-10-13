@@ -222,12 +222,18 @@ test("the wake word is heard loosely at the start, never in ordinary talk, and t
   // As Whisper tiny.en writes "Recon" or "Hey Recon", raw or after cleanupTranscript.
   for (const heard of ["hey recon", "Hey Recon.", "Hey, Recon!", "hey reckon", "Hey re-con.", "hey re con", "hey rekon",
     "Hey raccoon.", "hey racoon", "hey con", "Hey Kon.", "HAY RECON", "heh recon", "  um, hey recon", "Uh hey, con.", '"Hey Recon."',
-    "recon", "Recon.", "Reckon?", "re-con", "Raccoon.", "okay recon", "OK, Recon.", "um recon"]) {
+    "recon", "Recon.", "Reckon?", "re-con", "Raccoon.", "okay recon", "OK, Recon.", "um recon",
+    // A British "Recon", as Whisper wrote it for the Hazel voice.
+    "Hey Reakin'!", "Reakin'", "Reekon, what is the status of the build?", "Hey Reacon, tell the builder.", "hey reekin",
+    // As heard over background noise: an m for the n, and "hey" without its h.
+    "Recom. Open the AI terminal folder.", "Hey, Recom.", "Reeken, open it.", "A recon", "A recon. Tell the builder.", "A recon, switch to it."]) {
     assert.ok(matchesWakeWord(heard), heard);
   }
   for (const heard of ["", "   ", "hey", "hey can you check the build", "Hey, contact the team.", "hey cone", "hey bacon",
     "hey reconnect the database", "hey recons", "they recon", "so hey recon", "I said hey recon", "I reckon so",
-    "hey you, recon", "heyrecon", "Hey Ron.", "con", "reconnect", "reconsider it", "okay con"]) {
+    "hey you, recon", "heyrecon", "Hey Ron.", "con", "reconnect", "reconsider it", "okay con",
+    "The reckoning is near.", "Reckoning day", "Reaching out now", "Reacting to it", "Reconciliation report is done", "Ricans",
+    "A recon mission was cancelled.", "a reckoning", "Recommend it to them", "Recent changes are in", "We can open the wedding web project.", "A weekend away"]) {
     assert.ok(!matchesWakeWord(heard), heard);
   }
   assert.equal(afterWakeWord("Recon, what's the build status?"), "what's the build status?");
@@ -256,8 +262,16 @@ test("short spoken commands turn the mic off or end the conversation; longer req
 
 test("a Manager's answer is read aloud without Markdown, code or links", () => {
   assert.equal(speakable("**Done.** Tests pass in `npm test`."), "Done. Tests pass in npm test.");
-  assert.equal(speakable("## Status\n- build green\n- 2 fixes\nSee https://github.com/x/y/pull/3"), "Status build green 2 fixes See a link");
+  // Headings and list items end with a pause; wrapped prose runs on.
+  assert.equal(speakable("## Status\n- build green\n- 2 fixes\nSee https://github.com/x/y/pull/3"), "Status. build green. 2 fixes. See a link");
+  assert.equal(speakable("The tests pass and the\nbuild is green."), "The tests pass and the build is green.");
   assert.equal(speakable("Run this:\n```\nnpm ci\n```\nthen restart."), "Run this: (code shown on screen) then restart.");
+  // A link is read by its label, never as brackets and a half-removed address.
+  assert.equal(speakable("See [the pull request](https://github.com/x/y/pull/3) for details."), "See the pull request for details.");
+  // A table is read row by row, without its rule row of dashes.
+  assert.equal(speakable("| Account | Week |\n|---|:--:|\n| Earl | 40% |"), "Account, Week. Earl, 40%.");
+  // Emphasis goes, names with underscores stay, and ~ before a number is "about".
+  assert.equal(speakable("_Done_ in voice_reply, takes ~2 min"), "Done in voice_reply, takes about 2 min");
 });
 
 /** A stand-in for Ollama's embedding endpoint: texts about the same subject get the same direction. */
@@ -344,16 +358,24 @@ test("a raw speech-to-text transcript is cleaned up into a tidier prompt", () =>
 test("Recon is asked to open a project by name, and the name is matched the way speech recognition writes it", () => {
   assert.deepEqual(openProjectRequest("Open the Ecoshift project."), { name: "Ecoshift", explicit: true });
   assert.deepEqual(openProjectRequest("switch to AI Terminal"), { name: "AI Terminal", explicit: false });
+  // Whisper sometimes writes "switch to" as "switched to".
+  assert.deepEqual(openProjectRequest("Switched to the new fields project."), { name: "new fields", explicit: true });
   assert.deepEqual(openProjectRequest("open project seenuri"), { name: "seenuri", explicit: true });
   assert.deepEqual(openProjectRequest("open a project"), { name: "", explicit: true });
   assert.deepEqual(openProjectRequest("open the readme"), { name: "readme", explicit: false });
   assert.equal(openProjectRequest("what is the status of the build"), null);
   assert.equal(openProjectRequest("open the file and tell the builder to add a login page with two fields"), null);
 
-  const folders = ["D:\AI Terminal", "D:\Projects\Ecoshift", "C:/work/NewFieldsManagementTool", "D:\Seenuri"];
-  assert.equal(matchProject("A.I. terminal", folders), "D:\AI Terminal");
-  assert.equal(matchProject("eco shift", folders), "D:\Projects\Ecoshift");
+  // Real Windows paths, with backslashes (a lone "\A" in a string literal is just "A").
+  const folders = ["D:\\AI Terminal", "D:\\Projects\\Ecoshift", "C:/work/NewFieldsManagementTool", "D:\\Seenuri"];
+  assert.equal(matchProject("A.I. terminal", folders), "D:\\AI Terminal");
+  assert.equal(matchProject("eco shift", folders), "D:\\Projects\\Ecoshift");
   assert.equal(matchProject("new fields", folders), "C:/work/NewFieldsManagementTool");
-  assert.equal(matchProject("senuri", folders), "D:\Seenuri");
+  assert.equal(matchProject("senuri", folders), "D:\\Seenuri");
   assert.equal(matchProject("readme", folders), null);
+  // Only a folder's own name counts: the folders above it are not projects.
+  assert.equal(matchProject("projects", folders), null);
+  assert.equal(matchProject("admin", ["C:\\Users\\Admin\\Shop"]), null);
+  // An exact name wins over a longer one that starts the same.
+  assert.equal(matchProject("shop", ["C:\\Users\\Admin\\Shop", "C:\\Users\\Admin\\Shopify"]), "C:\\Users\\Admin\\Shop");
 });

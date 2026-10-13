@@ -21,13 +21,13 @@ const $ = (id: string) => document.getElementById(id)!;
 
 /** A short message at the bottom of the window that goes away by itself, instead of a dialog to click away. */
 let toastTimer = 0;
-function toast(text: string, bad = false): void {
+function toast(text: string, bad = false, ms = bad ? 6000 : 3000): void {
   const box = $("toast");
   box.textContent = text;
   box.className = bad ? "bad" : "";
   box.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => (box.hidden = true), bad ? 6000 : 3000);
+  toastTimer = window.setTimeout(() => (box.hidden = true), ms);
 }
 let workspace: Workspace;
 let active = "";
@@ -685,6 +685,8 @@ api.on("voice:reply", (id: string, text: string, spoken?: string) => {
 async function voiceSwitch(on: boolean): Promise<void> {
   if (on && !(await voiceStart())) return;
   if (!on) voiceStop();
+  // The first time, say what was just switched on: the microphone stays open, now and at every start.
+  if (on && workspace.voiceOn !== true) toast('Recon is on: the microphone listens for "Recon", also when the app starts next. Click Recon or say "turn off the mic" to switch it off.', false, 8000);
   workspace.voiceOn = on;
   api.invoke("ui:save", { voiceOn: on });
 }
@@ -1964,6 +1966,31 @@ for (const id of ["budgetSession", "budgetWeek"]) {
   };
 }
 
+/**
+ * The state at the end of a terminal's usage bar when Claude Code has printed no limit message:
+ * from Anthropic's percentages when there are some, else from the budgets, and never "within limit"
+ * when nothing is known.
+ */
+function usageStatus(
+  plan: { session?: { percent: number } | null; week?: { percent: number } | null } | null,
+  usage: { week: { total: number }; session?: { tokens: { total: number } } | null } | undefined,
+  budget: { session?: number; week?: number },
+  part: (className: string, long: string, short: string) => HTMLSpanElement,
+): HTMLSpanElement {
+  const over = (budget.session && (usage?.session?.tokens.total ?? 0) > budget.session) || (budget.week && (usage?.week.total ?? 0) > budget.week);
+  if (plan && (plan.session || plan.week)) {
+    const used = Math.max(plan.session?.percent ?? 0, plan.week?.percent ?? 0);
+    if (used >= 100) return part("limit reached", "Limit reached", "Limit");
+    if (used >= 80) return part("limit near", "Near limit", "Near");
+    // Far from Anthropic's limit can still be past the user's own budget, which the bar beside it shows.
+    return over ? part("limit near", "Over budget", "Over") : part("limit ok", "Within limit", "OK");
+  }
+  if (over) return part("limit near", "Over budget", "Over");
+  const unknown = part("limit unknown", "Limit unknown", "?");
+  unknown.title = "Anthropic did not report this account's limits, so whether it is near one is not known.";
+  return unknown;
+}
+
 function showUsageBars(): void {
   const now = Date.now();
   for (const bar of document.querySelectorAll<HTMLElement>(".usagebar")) {
@@ -2029,7 +2056,7 @@ function showUsageBars(): void {
       ? part(`limit ${limit.level}`,
         `${limit.level === "reached" ? (limit.weekly ? "Weekly limit reached" : "Limit reached") : "Near limit"}${limit.resets ? ` · resets ${limit.resets}` : ""}`,
         `${limit.level === "reached" ? "Limit" : "Near"}${limit.resets ? ` · ${limit.resets}` : ""}`)
-      : part("limit ok", "Within limit", "OK");
+      : usageStatus(plan, usage, budget, part);
     bar.replaceChildren(...[week, session, until, status].filter((el): el is HTMLSpanElement => !!el));
     bar.title = (plan
       ? `Anthropic: ${limitText(plan.session)} of the session limit${resetText(plan.session) ? ` (starts over ${resetText(plan.session)})` : ""}, ` +
@@ -3145,8 +3172,9 @@ window.addEventListener("beforeunload", (event) => {
   await refreshAccounts();
   offerFoundFolders();
   showSorting(await api.invoke("sorting:get"));
-  // Recon listens from the start, so saying its name is enough; the header button turns it off.
-  if (workspace.voiceOn !== false) void voiceStart();
+  // The microphone opens only for someone who switched Recon on themselves; from then on it listens
+  // from the start, so saying its name is enough, until it is switched off again.
+  if (workspace.voiceOn === true) void voiceStart();
   showUsage();
   setInterval(showUsage, USAGE_REFRESH_MS);
   const frame = () => {
