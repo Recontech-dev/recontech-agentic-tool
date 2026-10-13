@@ -168,7 +168,7 @@ test("control characters in a role prompt never reach the typed command line as 
   const marker = path.join(root, "broke-out.txt");
   const name = "broke-out.txt";
   // Ctrl+C (cancel the line), Ctrl+U, Ctrl+V (paste the clipboard), Esc, a fake paste end, the one-byte CSI, line breaks.
-  const tricks = ["\x03", "\x15", "\x16", "\x1b\x1b", "\x1b[201~", "\x9b201~", "\r\n", "\x00", "\x7f"];
+  const tricks = ["\x03", "\x15", "\x16", "\x1b\x1b", "\x1b[201~", "\x9b201~", "\x1b[2J", "\x1b]0;t\x07", "\x1bc", "\r\n", "\x00", "\x7f"];
   for (const trick of tricks) {
     const prompt = `You review code.${trick}New-Item -ItemType File ${name} #`;
     for (const command of [

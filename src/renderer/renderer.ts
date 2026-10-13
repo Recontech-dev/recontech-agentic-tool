@@ -1,7 +1,7 @@
 // The window: one terminal per profile, and the brain graph on the right.
 // This file runs in the page, so it uses only browser APIs and window.api from the preload script.
 
-interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama" | "free"; model?: string; role?: string }
+interface Profile { id: string; name: string; color: string; configDir: string | null; kind?: "claude" | "ollama" | "free"; model?: string; role?: string; browser?: boolean }
 interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number; editorShare?: number; filesOpen?: boolean; voiceOn?: boolean; split?: SplitNode | null; usageBudget?: { session?: number; week?: number } }
 interface GraphNode { id: string; kind: string; label: string; text: string; detail: string; open: boolean;
   color?: string; resume?: { profile: string; id: string; folder: string }; tag?: string; unfinished?: boolean;
@@ -786,12 +786,47 @@ function makePanel(profile: Profile): void {
     workspace = await api.invoke("profile:role", profile.id, role.value);
     if (started.has(profile.id) && confirm(`${now().name} gets its new role when its terminal restarts. Restart it now? What is running there is closed.`)) start(profile.id);
   };
+  // The user's real Chrome, through the Claude in Chrome extension. Never for Ollama or the free terminal.
+  const browser = document.createElement("button");
+  browser.className = "icon browser";
+  browser.textContent = "🌐";
+  browser.hidden = (profile.kind ?? "claude") !== "claude";
+  const showBrowser = () => {
+    const on = now().browser === true;
+    browser.classList.toggle("on", on);
+    browser.setAttribute("aria-pressed", String(on));
+    browser.title = on
+      ? "Browser on: Claude Code here can use your Chrome, with your sign-ins. Click to turn it off."
+      : "Browser off. Click to let Claude Code here use your Chrome through the Claude in Chrome extension.";
+  };
+  showBrowser();
+  browser.onclick = async () => {
+    const on = now().browser !== true;
+    const wasRunning = running(profile.id);
+    const what = on
+      ? `Let ${now().name} use your Chrome? Claude Code there can open pages and act in your real browser, with your sign-ins. ` +
+        "It needs the Claude in Chrome extension, signed in to the same Claude account as this terminal."
+      : `Turn the browser off for ${now().name}?`;
+    if (!confirm(wasRunning ? `${what}
+
+Its terminal restarts; what is running there now is closed.` : what)) return;
+    const answer = await api.invoke("profile:browser", profile.id, on);
+    if (answer.error) return toast(answer.error, true);
+    workspace = answer;
+    showBrowser();
+    showUsageBars();
+    if (on) {
+      const other = browserAccountClash(profile.id);
+      if (other) toast(other, true);
+    }
+    if (wasRunning) start(profile.id);
+  };
   // Messages from other terminals wait while the user is typing here; this shows them and sends one now.
   const waiting = document.createElement("button");
   waiting.className = "waiting";
   waiting.hidden = true;
   waiting.onclick = () => api.invoke("term:deliver-now", profile.id);
-  bar.append(dot, name, hint, eye, spacer, waiting, role, restart, remove);
+  bar.append(dot, name, hint, eye, spacer, waiting, browser, role, restart, remove);
   draggableTerminal(bar, profile.id);
   const body = document.createElement("div");
   body.className = "term";
@@ -1991,6 +2026,20 @@ function usageStatus(
   return unknown;
 }
 
+/**
+ * The Claude in Chrome extension is signed in to one Claude account and only pairs with terminals
+ * signed in to that same account. When terminals with different accounts have the browser on, at most
+ * one account's terminals can use it; this says so, or returns "" when there is no clash.
+ */
+function browserAccountClash(id: string): string {
+  const email = accounts[id];
+  if (!email) return "";
+  const others = workspace.profiles.filter((p) => p.id !== id && p.browser && accounts[p.id] && accounts[p.id] !== email);
+  if (!others.length) return "";
+  return `The Chrome extension is signed in to one Claude account at a time. ${others.map((p) => p.name).join(", ")} ` +
+    `${others.length > 1 ? "use" : "uses"} the browser with another account, so only the terminals with the extension's account can use it.`;
+}
+
 function showUsageBars(): void {
   const now = Date.now();
   for (const bar of document.querySelectorAll<HTMLElement>(".usagebar")) {
@@ -2057,7 +2106,14 @@ function showUsageBars(): void {
         `${limit.level === "reached" ? (limit.weekly ? "Weekly limit reached" : "Limit reached") : "Near limit"}${limit.resets ? ` · resets ${limit.resets}` : ""}`,
         `${limit.level === "reached" ? "Limit" : "Near"}${limit.resets ? ` · ${limit.resets}` : ""}`)
       : usageStatus(plan, usage, budget, part);
-    bar.replaceChildren(...[week, session, until, status].filter((el): el is HTMLSpanElement => !!el));
+    // Whether this terminal's Claude Code was given the browser. Which connected browser it picked is
+    // only known inside Claude Code (its /chrome panel), so that is not shown here.
+    const browserOn = workspace?.profiles.find((p) => p.id === id)?.browser === true;
+    const clash = browserOn ? browserAccountClash(id) : "";
+    const browser = browserOn ? part(`browser${clash ? " clash" : ""}`, clash ? "Browser on · other account?" : "Browser on", "🌐") : null;
+    if (browser) browser.title = (clash || "Claude Code here can use your Chrome through the Claude in Chrome extension.") +
+      " Run /chrome in the terminal to see the connection and choose which browser it uses.";
+    bar.replaceChildren(...[week, session, until, browser, status].filter((el): el is HTMLSpanElement => !!el));
     bar.title = (plan
       ? `Anthropic: ${limitText(plan.session)} of the session limit${resetText(plan.session) ? ` (starts over ${resetText(plan.session)})` : ""}, ` +
         `${limitText(plan.week)} of the weekly limit${resetText(plan.week) ? ` (starts over ${resetText(plan.week)})` : ""}. This is what the Claude app shows.\n`
@@ -2256,7 +2312,7 @@ function showSorting(state: { status: string; [key: string]: any }): void {
 api.on("sorting:status", showSorting);
 $("sorting").onclick = async () => {
   const on = $("sorting").textContent!.endsWith("on");
-  if (!on && !confirm("Smart sorting downloads a 1.7 GB model once and then labels your sessions on this computer (nothing is sent anywhere). It uses about 2 GB of memory while running. Turn it on?")) return;
+  if (!on && !confirm("Smart sorting downloads a 1.7 GB model once and then labels your sessions on this computer (nothing is sent anywhere). It uses about 2 GB of memory while it sorts, and lets go of it when there is nothing new to sort. Turn it on?")) return;
   showSorting(await api.invoke("sorting:toggle"));
 };
 

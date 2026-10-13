@@ -23,8 +23,7 @@ import { planLimits } from "../brain/limits";
 import { tokenUsage } from "../brain/usage";
 import * as ws from "../brain/workspace";
 import { Control } from "./control";
-import { Inbox } from "./inbox";
-import { PasteMode, bracketedPaste } from "./paste";
+import { Delivery } from "./delivery";
 import { VOICE_REPLY_MS, VoiceReplies } from "./voice";
 import { FreeModels } from "./free";
 import { makePrivate } from "./privacy";
@@ -143,52 +142,22 @@ const control = new Control({
   },
 });
 
-/** Messages from other terminals that wait while the user is typing in the terminal they are for. */
-const inbox = new Inbox();
+/**
+ * Everything the app puts into a terminal: messages held while the user types there, and nothing at
+ * all while Claude Code is not the program reading it.
+ */
+const delivery = new Delivery((id) => terminals.get(id), {
+  message: (id) => send("term:message", id),
+  waiting: (id, count) => send("term:waiting", id, count),
+});
+const inbox = delivery.inbox;
 const INBOX_CHECK_MS = 500;
 /** Terminals the user talks to the Manager through by voice; the Manager's messages to them are spoken, not typed in. */
 const voiceReplies = new VoiceReplies();
 
-/** Whether each terminal's program has bracketed paste on, which Claude Code has and a plain shell has not. */
-const pasteModes = new Map<string, PasteMode>();
-/**
- * Text goes into a terminal only while Claude Code reads it. After Claude Code exits the terminal is
- * a plain shell, where a "paste" is typed keys and a message would run as a command.
- */
-const pasteAllowed = (id: string) => terminals.has(id) && pasteModes.get(id)?.on === true;
-
-/** Type a message from another terminal into a terminal as a prompt. */
-function writeMessage(id: string, text: string): void {
-  const term = terminals.get(id);
-  if (!term || !pasteAllowed(id)) return;
-  // Sent as a paste so line breaks stay inside the message, then Enter to submit it.
-  term.write(bracketedPaste(text));
-  setTimeout(() => terminals.get(id) === term && term.write("\r"), 400);
-  send("term:message", id);
-}
-
-/** Send a message to a profile's terminal, or hold it while its user is typing. */
+/** Send a message to a profile's terminal, or hold it while its user is typing or Claude Code is not running there. */
 function sendToProfile(profile: ws.Profile, text: string): "sent" | "queued" {
-  if (!terminals.has(profile.id)) return "sent";
-  // While the user is typing there, the message waits, and so does any message after it, to keep their order.
-  // It also waits while Claude Code is not running there, until it is started again.
-  if (inbox.busy(profile.id) || inbox.waiting(profile.id) || !pasteAllowed(profile.id)) {
-    inbox.hold(profile.id, text);
-    send("term:waiting", profile.id, inbox.waiting(profile.id));
-    return "queued";
-  }
-  writeMessage(profile.id, text);
-  return "sent";
-}
-
-/** Send the next waiting message to a terminal once it is free, or right away when the user asks. */
-function deliverWaiting(id: string, force = false): void {
-  // Not even on request while Claude Code is not running there: the shell would run the message.
-  if (!pasteAllowed(id)) return;
-  const text = inbox.next(id, force);
-  if (text === undefined) return;
-  writeMessage(id, text);
-  send("term:waiting", id, inbox.waiting(id));
+  return delivery.send(profile.id, text);
 }
 
 function shellCommand(): { file: string; args: string[] } {
@@ -203,7 +172,7 @@ function send(channel: string, ...args: unknown[]): void {
 function stopTerminal(id: string): void {
   terminals.get(id)?.kill();
   terminals.delete(id);
-  pasteModes.delete(id);
+  delivery.unwatch(id);
 }
 
 function startTerminal(id: string, options: { folder?: string; resume?: string } = {}): void {
@@ -221,8 +190,7 @@ function startTerminal(id: string, options: { folder?: string; resume?: string }
   const env = profileEnv(profile, process.env, free.connection());
   const term = pty.spawn(shell.file, shell.args, { name: "xterm-256color", cols, rows, cwd: folder, env });
   terminals.set(id, term);
-  const mode = new PasteMode();
-  pasteModes.set(id, mode);
+  const mode = delivery.watch(id);
   term.onData((data) => {
     mode.feed(data);
     send("term:data", id, data);
@@ -231,7 +199,7 @@ function startTerminal(id: string, options: { folder?: string; resume?: string }
     // A shell replaced by a restart, or closed with its profile, exits later; that is not news for the window.
     if (terminals.get(id) !== term) return;
     terminals.delete(id);
-    pasteModes.delete(id);
+    delivery.unwatch(id);
     send("term:exit", id);
   });
   // ALT_NO_CLAUDE is for automated checks of the window: the shell opens but Claude Code is not started.
@@ -743,6 +711,15 @@ ipcMain.handle("profile:role", (_event, id: string, role: string) => {
   }
   return workspace;
 });
+// The browser switch in a terminal's title bar. The page restarts the terminal itself, after asking.
+ipcMain.handle("profile:browser", (_event, id: string, on: boolean) =>
+  result(() => {
+    if (typeof on !== "boolean") throw new Error("Say on or off.");
+    ws.setBrowser(workspace, String(id), on);
+    ws.save(workspace);
+    return workspace;
+  }),
+);
 /** The role manager: every role with its instructions, whether it is built in, and the terminals that have it. */
 ipcMain.handle("role:list", () =>
   allRoles(workspace.roles).filter((r) => r.id).map((r) => ({
@@ -931,10 +908,7 @@ ipcMain.on("term:input", (_event, id: string, data: string) => {
 ipcMain.handle("term:paste", (_event, id: string, text: string, oneLine: boolean) => {
   const target = String(id);
   if (!terminals.has(target)) return { error: "That terminal is not running." };
-  if (!pasteAllowed(target)) return { error: "Claude Code is not running in that terminal, so nothing was put in: the shell would run it. Start Claude Code there (↻) and try again." };
-  const data = bracketedPaste(String(text ?? ""), oneLine === true);
-  inbox.typed(target, data);
-  terminals.get(target)!.write(data);
+  if (!delivery.paste(target, String(text ?? ""), oneLine === true)) return { error: "Claude Code is not running in that terminal, so nothing was put in: the shell would run it. Start Claude Code there (↻) and try again." };
   return { ok: true };
 });
 // While Hey Recon listens, the window keeps full speed when minimized or covered; otherwise it would stop hearing.
@@ -943,7 +917,7 @@ ipcMain.on("voice:listening", (_event, on: boolean) => {
   if (win && !win.isDestroyed()) win.webContents.setBackgroundThrottling(on !== true && !process.env.ALT_SCREENSHOT);
 });
 // The "message waiting" button in a terminal's title bar: the user wants it now, typing or not.
-ipcMain.handle("term:deliver-now", (_event, id: string) => deliverWaiting(String(id), true));
+ipcMain.handle("term:deliver-now", (_event, id: string) => delivery.flush(String(id), true));
 ipcMain.on("term:resize", (_event, id: string, cols: number, rows: number) => {
   if (!(cols > 0 && rows > 0 && cols <= 2000 && rows <= 1000)) return;
   sizes.set(String(id), { cols: Math.floor(cols), rows: Math.floor(rows) });
@@ -969,7 +943,7 @@ app.whenReady().then(async () => {
   createWindow();
   showRecoveryNotice();
   setInterval(pushGraph, BRAIN_REFRESH_MS);
-  setInterval(() => inbox.pending().forEach((id) => deliverWaiting(id)), INBOX_CHECK_MS);
+  setInterval(() => inbox.pending().forEach((id) => delivery.flush(id)), INBOX_CHECK_MS);
   checkNetwork();
   setInterval(checkNetwork, NETWORK_CHECK_MS);
   startUpdates();

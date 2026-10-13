@@ -297,6 +297,10 @@ test("smart sorting labels settled sessions and the brain uses the labels", asyn
   brain.update();
   const todo = sorting.pending(brain.sessions, sorting.loadLabels());
   assert.deepEqual(todo.map((s) => s.id), ["s1"], "a session still being worked on waits");
+  const failed = new Map([[sorting.sessionKey(todo[0]), todo[0].modified]]);
+  assert.equal(sorting.pending(brain.sessions, sorting.loadLabels(), Date.now(), failed).length, 0, "a session that could not be sorted is not retried");
+  failed.set(sorting.sessionKey(todo[0]), todo[0].modified - 1);
+  assert.equal(sorting.pending(brain.sessions, sorting.loadLabels(), Date.now(), failed).length, 1, "until it changes");
   assert.match(sorting.describe(todo[0]), /Title: Fix the cart total[\s\S]*- the cart total is wrong/);
 
   const asked: any[] = [];

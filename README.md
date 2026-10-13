@@ -150,6 +150,16 @@ Claude Code signs in through your web browser, and the browser approves whicheve
 
 Each profile is a separate Claude Code sign-in. Use your own accounts, for example a personal and a work account. Sharing or borrowing someone else's Claude account breaks Anthropic's terms and puts that account at risk. The app does not switch accounts for you when a usage limit is reached.
 
+### Browser
+
+The 🌐 button in a terminal's title bar lets that terminal's Claude Code use your Chrome, through Anthropic's [Claude in Chrome](https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn) extension. Turning it on or off restarts the terminal, after asking. While it is on, the bar under the terminal says **Browser on**.
+
+- Install the extension in Chrome first and sign in to it. The first time, restart Chrome once so it finds Claude Code.
+- It acts in your real browser, with your sign-ins: Claude opens its own tabs, and can read and click on any site you are logged in to. Allow sites in the extension's settings.
+- The extension is signed in to one Claude account at a time and only works with terminals signed in to that same account (and organization). If terminals with different accounts have the browser on, only those with the extension's account can use it; the bar under the others says **other account?**
+- Not for Ollama or the free models terminal: the extension needs a Claude sign-in.
+- Type `/chrome` in the terminal to see whether it is connected and to choose which browser it uses when more than one is connected.
+
 ## Free models terminal
 
 For when a Claude profile reaches its usage limit and you want to keep going.
@@ -217,7 +227,7 @@ Claude Code sends a long set of instructions with every request, so give Ollama 
 Smart sorting is off until you turn it on with the **Smart sorting** button above the graph.
 
 - It uses [Laya](https://github.com/receptron/laya), an open-source classification model that runs on your computer. Nothing is sent anywhere, and it works offline.
-- The first time, it downloads the model once: about 1.7 GB. If the drive it would use has less than 2.5 GB free, the app asks you to choose a folder on another drive. It uses about 2 GB of memory while it runs.
+- The first time, it downloads the model once: about 1.7 GB. If the drive it would use has less than 2.5 GB free, the app asks you to choose a folder on another drive. It uses about 2 GB of memory while it sorts, and lets go of it about a minute after there is nothing left to sort.
 - For each session it answers three questions: what kind of work it was, whether it was finished, and whether it records a decision worth remembering. A session is sorted once it has been quiet for 10 minutes, and again if you continue it later.
 - After the app starts, loading the model can take a minute or two; then each session takes a few seconds. It runs in the background, so you can keep working.
 - Sessions that look unfinished get a dashed orange ring in the graph, and `project_memory` lists them first so Claude picks them up. Use the menu next to the search box to show only unfinished sessions or one kind of work.

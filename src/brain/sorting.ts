@@ -92,8 +92,10 @@ export function renameProfileLabels(oldName: string, newName: string): void {
 }
 
 /** Sessions that have settled and have no labels for their current transcript yet. */
-export function pending(sessions: Session[], labels: Record<string, Labels>, now = Date.now()): Session[] {
-  return sessions.filter((s) => now - s.modified > SETTLE_MS && labels[sessionKey(s)]?.modified !== s.modified);
+export function pending(sessions: Session[], labels: Record<string, Labels>, now = Date.now(), failed?: Map<string, number>): Session[] {
+  // A session the model could not sort is not tried again until it changes: retrying it every recheck
+  // would keep the model loaded for good.
+  return sessions.filter((s) => now - s.modified > SETTLE_MS && labels[sessionKey(s)]?.modified !== s.modified && failed?.get(sessionKey(s)) !== s.modified);
 }
 
 /** What the model reads to judge what a session was about. It sees about 512 tokens, so the start matters most. */
@@ -129,3 +131,40 @@ export async function classify(model: Model, session: Session): Promise<Labels> 
 }
 
 export const isUnfinished = (labels?: Labels) => !!labels && labels.finished !== null && labels.finished < UNFINISHED_BELOW;
+
+/**
+ * How many rechecks in a row may find nothing to sort before the model is closed. Loaded it holds
+ * about 1.8 GB; closed, the worker holds under 100 MB. Loading it again takes 2-3 seconds while its files
+ * are in the system's disk cache and about a minute when they have to be read from disk again.
+ */
+export const UNLOAD_AFTER_IDLE_CHECKS = 2;
+
+/** The sorting model, loaded only while there is something to sort. */
+export class IdleModel<M extends { close(): Promise<void> }> {
+  private model: M | null = null;
+  private loading: Promise<M> | null = null;
+  private idle = 0;
+
+  constructor(private load: () => Promise<M>, private idleChecks = UNLOAD_AFTER_IDLE_CHECKS) {}
+
+  get loaded(): boolean {
+    return this.model !== null;
+  }
+
+  /** The model for a recheck that found work, loaded first if it was closed. */
+  async get(): Promise<M> {
+    this.idle = 0;
+    if (this.model) return this.model;
+    this.loading ??= this.load().finally(() => (this.loading = null));
+    return (this.model = await this.loading);
+  }
+
+  /** A recheck found nothing to sort: after enough of those in a row the model is closed. */
+  async idleCheck(): Promise<void> {
+    if (!this.model || ++this.idle < this.idleChecks) return;
+    const model = this.model;
+    this.model = null;
+    this.idle = 0;
+    await model.close();
+  }
+}

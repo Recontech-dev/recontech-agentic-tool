@@ -25,6 +25,8 @@ export interface Profile {
   model?: string;
   /** The terminal's job in the workspace: "builder", "reviewer", "tester", one of the user's own roles, or none. */
   role?: string;
+  /** Claude Code here may use the user's real Chrome through the Claude in Chrome extension. */
+  browser?: boolean;
 }
 
 export interface NewProfile {
@@ -211,6 +213,23 @@ export const FREE_PROFILE_ID = "free-models";
 /** True when this profile's terminal must be kept away from the user's projects and memory. */
 export function isContained(workspace: Workspace, profile: Profile | undefined): boolean {
   return profile?.kind === "free" && workspace.freeContained !== false;
+}
+
+/**
+ * Whether a profile may use the user's Chrome. Only a Claude sign-in can pair with the extension (not
+ * Ollama, not the free providers' bridge), and a contained terminal must never reach the user's browser.
+ */
+export function browserAllowed(workspace: Workspace, profile: Profile | undefined): boolean {
+  return !!profile && (profile.kind ?? "claude") === "claude" && !isContained(workspace, profile);
+}
+
+/** Turns the browser on or off for a profile; it takes effect when its terminal starts. */
+export function setBrowser(workspace: Workspace, id: string, on: boolean): void {
+  const profile = workspace.profiles.find((p) => p.id === id);
+  if (!profile) throw new Error("That profile is not in this workspace any more.");
+  if (on && !browserAllowed(workspace, profile)) throw new Error("Only a terminal signed in to Claude can use the browser.");
+  if (on) profile.browser = true;
+  else delete profile.browser;
 }
 
 /** Add the special Free models terminal if it is not there yet. */

@@ -4,6 +4,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { plainText } from "./kits";
 import { defaultClaudeDir } from "./paths";
 import { Profile } from "./workspace";
 
@@ -45,7 +46,8 @@ export function claudeCommand(profile: Profile, mcpConfig: string, resume?: stri
   // This line is typed into the shell, so a control character in it is a keystroke: Ctrl+C (\x03)
   // throws away what was typed so far and the rest runs as its own command. None may get through,
   // whatever the caller cleaned already (C0, DEL and the C1 range, whose \x9b is a one-byte ESC[).
-  const plain = (s: string) => s.replace(/[\x00-\x1f\x7f-\x9f]+/g, " ");
+  // Escape sequences go whole, so nothing like "[201~" is left behind either.
+  const plain = plainText;
   // PowerShell also ends a quoted string at a curly single quote, so those are escaped like ' itself.
   const quote = process.platform === "win32" ? (s: string) => `'${plain(s).replace(/['‘’‚‛]/g, "''")}'` : (s: string) => `'${plain(s).replace(/'/g, `'\\''`)}'`;
   const parts = ["claude"];
@@ -57,6 +59,9 @@ export function claudeCommand(profile: Profile, mcpConfig: string, resume?: stri
   // Claude Code's own ways of reaching other sessions and the web are switched off as well, so the
   // only way out of the container is the app's message_terminal.
   if (contained) parts.push("--restricted", "--strict-mcp-config", "--disallowedTools", quote(CONTAINED_OFF.join(",")));
+  // The user's real Chrome, through the Claude in Chrome extension: only for a Claude sign-in (the
+  // extension cannot pair with Ollama or the free bridge) and never for a contained terminal.
+  if (profile.browser === true && !contained && (profile.kind ?? "claude") === "claude") parts.push("--chrome");
   if (resume && /^[\w-]+$/.test(resume)) parts.push("--resume", resume);
   // Standing instructions (project kit and terminal role), kept to one line with plain quotes.
   const extra = plain(standing).replace(/["`$]/g, "").replace(/ {2,}/g, " ").trim();

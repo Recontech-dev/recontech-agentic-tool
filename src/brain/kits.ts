@@ -193,13 +193,24 @@ export function allRoles(custom?: unknown): Role[] {
 }
 export const roleById = (id: string | undefined, custom?: unknown) => allRoles(custom).find((r) => r.id === id) ?? ROLES[0];
 
+/** Escape sequences whole: OSC, DCS, SOS, PM and APC strings, CSI (ESC [ or the one-byte \x9b), and two-byte ESC forms. */
+const ESCAPE_SEQUENCES = /\x1b[\]PX^_][\s\S]*?(?:\x07|\x1b\\|\x9c|$)|(?:\x1b\[|\x9b)[0-?]*[ -\/]*[@-~]?|\x1b[ -\/]*[0-~]?/g;
+
+/**
+ * Text with no control characters left: escape sequences go whole (so no "[201~" or "[2J" is left
+ * behind), then every C0 character, DEL and the C1 range become a space. For text typed into a shell,
+ * where any of them would be a keystroke: Ctrl+C (\x03) drops the line typed so far and runs the rest.
+ */
+export function plainText(text: unknown): string {
+  return String(text ?? "").replace(ESCAPE_SEQUENCES, " ").replace(/[\x00-\x1f\x7f-\x9f]+/g, " ");
+}
+
 /**
  * A role's instructions as they can be stored and later passed on a command line: one line, and
  * without the characters the launch command drops anyway (double quotes, backticks, dollar signs).
  */
 export function cleanRolePrompt(prompt: string): string {
-  return String(prompt ?? "")
-    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+  return plainText(prompt)
     // PowerShell reads curly quotes as real ones, so a pasted "don’t" would end the quoted text early.
     .replace(/[‘’‚‛“”„‟]/g, "'")
     .replace(/["`$]/g, "'")
