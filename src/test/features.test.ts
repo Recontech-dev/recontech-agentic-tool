@@ -9,10 +9,11 @@ import { Brain } from "../brain/brain";
 import { KITS, ROLES, cleanRolePrompt, detectKit, standingPrompt } from "../brain/kits";
 import { claudeCommand } from "../brain/launch";
 import * as meaning from "../brain/meaning";
+import * as reinforce from "../brain/reinforce";
 import { SHARE_FILE, exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
 import * as sorting from "../brain/sorting";
 import { afterWakeWord, cleanupTranscript, matchProject, matchesWakeWord, openProjectRequest, speakable, voiceCommand } from "../brain/speech";
-import { addNote, notes } from "../brain/store";
+import { addNote, noteId, notes } from "../brain/store";
 import { newer } from "../brain/version";
 import * as ws from "../brain/workspace";
 
@@ -23,6 +24,7 @@ beforeEach(() => {
   process.env.ALT_CLAUDE_HOME = path.join(root, "claude-default");
   process.env.OLLAMA_HOST = "http://127.0.0.1:9";
   meaning.reset();
+  reinforce.reset();
 });
 
 test("the same note is not stored twice", () => {
@@ -73,6 +75,8 @@ test("the project kit is detected from the files, and kit and role become one li
   assert.equal(detectKit(make("m", { "package.json": '{"dependencies":{"expo":"52","react":"19"}}' })), "mobile");
   assert.equal(detectKit(make("f", { "pubspec.yaml": "" })), "mobile");
   assert.equal(detectKit(make("ue", { "Shooter.uproject": "{}" })), "unreal");
+  assert.equal(detectKit(make("bl", { "scene.blend": "" })), "blender");
+  assert.equal(detectKit(make("bl2", { "Docs/AI Artist/3D AI/README.md": "" })), "blender");
   // A desktop app with React in it is a desktop app, not a website.
   assert.equal(detectKit(make("d", { "package.json": '{"dependencies":{"react":"19"},"devDependencies":{"electron":"44"}}' })), "desktop");
   assert.equal(detectKit(make("t", { "src-tauri/tauri.conf.json": "{}" })), "desktop");
@@ -313,6 +317,72 @@ test("search finds notes by meaning when an embedding model is available, and by
   await brain.searchSmart("how do we ship it");
   assert.deepEqual(embedder.calls, [3], "vectors are cached, so the model is asked once");
   assert.ok(fs.existsSync(path.join(root, "home", "brain", "vectors.json")));
+});
+
+test("hybrid recall expands one hop to a note sharing a topic word with a direct hit, ranked below it", async () => {
+  const project = path.join(root, "infra");
+  fs.mkdirSync(project);
+  addNote(project, "Docker deploy script builds the image for staging", "manual");
+  addNote(project, "The staging image also needs a config file for logging", "manual");
+  addNote(project, "Billing invoices are generated monthly", "manual");
+  const brain = new Brain(() => ws.sources(ws.load()));
+  brain.update();
+
+  const { matches, byMeaning } = await brain.searchSmart("docker deploy");
+  assert.equal(byMeaning, false, "no embedding model in this test: keyword and expansion only");
+  assert.deepEqual(matches.map((m) => m.text), [
+    "Docker deploy script builds the image for staging",
+    "The staging image also needs a config file for logging",
+  ], "the direct keyword hit comes first, its topic neighbour follows, the unrelated note is left out");
+});
+
+test("hybrid recall also expands through reinforcement: notes recalled together before surface together again", async () => {
+  const project = path.join(root, "ops");
+  fs.mkdirSync(project);
+  addNote(project, "Zzqx migration runbook", "manual");
+  addNote(project, "Totally unrelated wombat juggling notes", "manual");
+  const brain = new Brain(() => ws.sources(ws.load()));
+  brain.update();
+
+  const [a, b] = notes(project);
+  await reinforce.touch([noteId(project, a.text), noteId(project, b.text)]);
+
+  const { matches } = await brain.searchSmart("zzqx migration");
+  assert.deepEqual(matches.map((m) => m.text), [
+    "Zzqx migration runbook",
+    "Totally unrelated wombat juggling notes",
+  ], "no shared word at all, but the two were recalled together before");
+});
+
+test("a recall returns while another process holds the reinforcement lock, and a search still being typed reinforces nothing", async () => {
+  const project = path.join(root, "locked");
+  fs.mkdirSync(project);
+  addNote(project, "Qwvx release checklist", "manual");
+  const id = noteId(project, "Qwvx release checklist");
+  const brain = new Brain(() => ws.sources(ws.load()));
+  brain.update();
+
+  // Typed, not finished: found, but not counted as a use.
+  assert.equal((await brain.searchSmart("qwvx", 10, { reinforce: false })).matches.length, 1);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(reinforce.scoreOf(id), 0);
+
+  // Another process holds the lock (for longer than a recall would wait for it): the answer still comes at once.
+  const lock = path.join(process.env.ALT_HOME!, "brain", "reinforce.json.lock");
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  fs.writeFileSync(lock, "");
+  try {
+    const started = Date.now();
+    const { matches } = await brain.searchSmart("qwvx");
+    assert.equal(matches[0].text, "Qwvx release checklist");
+    assert.ok(Date.now() - started < 1000, `answered in ${Date.now() - started} ms, without waiting for the lock`);
+  } finally {
+    fs.rmSync(lock, { force: true });
+  }
+  // With the lock free, a finished recall is counted (in the background, so give it a moment).
+  await brain.searchSmart("qwvx");
+  for (let i = 0; i < 100 && !reinforce.scoreOf(id); i++) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(reinforce.scoreOf(id) > 0);
 });
 
 test("unfinished work is listed with the open project first", () => {

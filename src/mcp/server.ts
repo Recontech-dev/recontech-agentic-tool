@@ -6,7 +6,8 @@ import * as fs from "node:fs";
 import * as readline from "node:readline";
 
 import { Brain } from "../brain/brain";
-import { addNote, removeNote } from "../brain/store";
+import { addNote, cleanUrl, removeNote } from "../brain/store";
+import { STATUSES, Task, TaskStatus, Teammate, addTask, boardSummary, checkerFor, handOffMessage, moveTask, readTasks, whyNotMove } from "../brain/tasks";
 import { sources } from "../brain/workspace";
 
 const PROTOCOL_VERSION = "2025-06-18";
@@ -37,7 +38,11 @@ const INSTRUCTIONS =
   "message. A message arrives there as a prompt starting with [Message from the \"<name>\" terminal]. When you receive such a " +
   "prompt, do what it asks and send your answer back with message_terminal to the terminal it came from. Keep messages short " +
   "and concrete, stop once the question is settled, and never keep a back-and-forth going without a purpose: every message " +
-  "uses the user's usage on both sides." +
+  "uses the user's usage on both sides. " +
+  "RESEARCH: for any non-trivial task, work in this order. First recall (and project_memory) to see what this and other projects " +
+  "already learned about it; second, search the web for how it is done well (official docs, well-regarded sources); then implement. " +
+  "Save what was learned with remember, kind \"research\", with the source URL in source, so the next project finds it. " +
+  "Skip the web for trivial edits." +
   (SELF ? ` This terminal is called "${SELF}".` : "");
 
 const projectArg = { type: "string", description: "Project folder. Leave out to use the current folder." };
@@ -45,8 +50,17 @@ const projectArg = { type: "string", description: "Project folder. Leave out to 
 const TOOLS = [
   {
     name: "remember",
-    description: "Save a short note about the project for future sessions: a decision, a fact about the code or setup, a preference, or unfinished work.",
-    inputSchema: { type: "object", properties: { note: { type: "string" }, project: projectArg }, required: ["note"], additionalProperties: false },
+    description: "Save a short note about the project for future sessions: a decision, a fact about the code or setup, a preference, or unfinished work. For something learned from research, set kind to \"research\" and give the source URL.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        note: { type: "string" },
+        kind: { type: "string", enum: ["note", "research"], description: "\"research\" for a finding learned from the web or docs; \"note\" (the default) for a decision or fact" },
+        source: { type: "string", description: "For research: the URL it came from" },
+        project: projectArg,
+      },
+      required: ["note"], additionalProperties: false,
+    },
   },
   {
     name: "recall",
@@ -86,7 +100,39 @@ const TOOLS = [
       required: ["to", "message"], additionalProperties: false,
     },
   },
+  {
+    name: "hand_task",
+    description: "Hand a task to another terminal and put it on the project's task board: a short title, the files, and what done looks like. The terminal is sent the task as a message.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "The terminal's name, as shown by list_terminals" },
+        title: { type: "string" },
+        files: { type: "array", items: { type: "string" } },
+        done: { type: "string", description: "What done looks like" },
+        project: projectArg,
+      },
+      required: ["to", "title"], additionalProperties: false,
+    },
+  },
+  {
+    name: "update_task",
+    description: "Move a task on the board: working, review, done or failed, with a short note. A Builder's task marked done is sent to a Reviewer or Tester terminal to check.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" }, status: { type: "string", enum: [...STATUSES] }, note: { type: "string" }, project: projectArg },
+      required: ["id", "status"], additionalProperties: false,
+    },
+  },
+  {
+    name: "task_board",
+    description: "The project's task board: every task, who has it and how far it got.",
+    inputSchema: { type: "object", properties: { project: projectArg }, additionalProperties: false },
+  },
 ];
+
+/** One task as a line of the board. */
+const taskLine = (t: Task) => `- ${t.id} [${t.status}] "${t.title}", ${t.to} (from ${t.from})${t.note ? `: ${t.note}` : ""}`;
 
 const brain = new Brain(() => sources());
 
@@ -120,13 +166,17 @@ async function runTool(name: string, args: any): Promise<string> {
   switch (name) {
     case "remember": {
       if (typeof args?.note !== "string" || !args.note.trim()) throw new Error("note must be a non-empty string");
-      return `Remembered for ${folder}: ${addNote(folder, args.note, "claude-code")}`;
+      const research = args?.kind === "research";
+      const url = cleanUrl(args?.source);
+      if (args?.source && !url) throw new Error("source must be an http or https URL");
+      const text = addNote(folder, args.note, "claude-code", { kind: research ? "research" : undefined, url });
+      return `Remembered${research ? " as research" : ""} for ${folder}: ${text}${url ? ` (source: ${url})` : ""}`;
     }
     case "recall": {
       brain.update();
       const { matches } = await brain.searchSmart(String(args?.query ?? ""));
       if (!matches.length) return "Nothing in memory matches.";
-      return matches.map((m) => `- [${m.kind}] ${m.project} (${m.when}): ${m.text}`).join("\n");
+      return matches.map((m) => `- [${m.research ? "research" : m.kind}] ${m.project} (${m.when}): ${m.text}${m.url ? ` Source: ${m.url}` : ""}`).join("\n");
     }
     case "project_memory":
       brain.update();
@@ -151,6 +201,67 @@ async function runTool(name: string, args: any): Promise<string> {
         return `Queued for "${delivered}": the user is typing there, so the message arrives as soon as they send or clear what they are typing. Do not send it again. Its reply arrives here as a new prompt. ${remaining} more messages allowed for now.`;
       }
       return `Delivered to "${delivered}". It will act on the message and can answer with its own message; its reply arrives here as a new prompt. ${remaining} more messages allowed for now.`;
+    }
+    case "hand_task": {
+      const task = addTask(folder, { title: args?.title, from: SELF || "another terminal", to: args?.to, files: args?.files, done: args?.done });
+      const lines = [`You are handed task ${task.id}: "${task.title}".`];
+      if (task.files.length) lines.push(`Files: ${task.files.join(", ")}.`);
+      if (task.done) lines.push(`Done means: ${task.done}`);
+      lines.push(`Call update_task with id "${task.id}" as you go: "working" when you start, "done" when it is finished.`);
+      try {
+        await control("/send", { from: SELF, to: task.to, message: lines.join(" ") });
+      } catch (error) {
+        return `Task ${task.id} is on the board for ${task.to}, but it could not be sent: ${(error as Error).message}`;
+      }
+      return `Task ${task.id} is on the board and was sent to ${task.to}.`;
+    }
+    case "update_task": {
+      const status = String(args?.status ?? "") as TaskStatus;
+      const note = String(args?.note ?? "");
+      const id = String(args?.id ?? "");
+      const task = readTasks(folder).find((t) => t.id === id);
+      if (task && STATUSES.includes(status)) {
+        const refused = whyNotMove(task, SELF, status);
+        if (refused) throw new Error(refused);
+      }
+      // A failed check goes back to the Builder, findings and all, to fix and mark done again (which sends it back for review).
+      if (status === "failed" && task?.status === "review" && task.builder) {
+        const back = moveTask(folder, task.id, "working", note, task.builder);
+        try {
+          await control("/send", {
+            from: SELF, to: task.builder,
+            message: `Task ${task.id} "${task.title}" did not pass ${task.to}'s check: ${back.note || "no details given"} Fix it, then call update_task with id "${task.id}" and status "done" again.`,
+          });
+        } catch (error) {
+          return `Task ${task.id} is back with ${task.builder}, but the message could not be sent: ${(error as Error).message}`;
+        }
+        return `Task ${task.id} failed the check and went back to ${task.builder} with your note.`;
+      }
+      if (status === "done" && task && task.status !== "review") {
+        // A Builder's finished work goes to a Reviewer or Tester first; it is only done once they say so.
+        let team: Teammate[] = [];
+        try {
+          team = (await control("/terminals", {})).terminals ?? [];
+        } catch {
+          // The app is not reachable: there is nobody to hand it to, so it is simply done.
+        }
+        const checker = checkerFor(task, team);
+        if (checker) {
+          const moved = moveTask(folder, task.id, "review", note, checker.name, task.to);
+          try {
+            await control("/send", { from: SELF, to: checker.name, message: handOffMessage(moved, task.to, moved.note) });
+          } catch (error) {
+            return `Task ${task.id} is waiting for review by ${checker.name}, but the message could not be sent: ${(error as Error).message}`;
+          }
+          return `Task ${task.id} was sent to ${checker.name} (${checker.role}) to check. It counts as done once ${checker.name} marks it so.`;
+        }
+      }
+      const moved = moveTask(folder, id, status, note);
+      return `Task ${moved.id} is now ${moved.status}.`;
+    }
+    case "task_board": {
+      const tasks = readTasks(folder);
+      return [boardSummary(tasks), ...tasks.map(taskLine)].join("\n");
     }
     default:
       throw new Error(`Unknown tool ${name}`);

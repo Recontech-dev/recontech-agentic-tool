@@ -8,19 +8,21 @@ import { beforeEach, test } from "node:test";
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "alt-test-"));
 let root = "";
 
+// Load after ALT_HOME is set; paths are read on every call, so one import serves every test.
+import { Brain } from "../brain/brain";
+import { findTokens, redact } from "../brain/redact";
+import * as reinforce from "../brain/reinforce";
+import { loadIndex, readTranscript, refresh, removeSession, renameProfileSessions, typedText } from "../brain/sessions";
+import { loadLabels, renameProfileLabels, saveLabels } from "../brain/sorting";
+import { addNote, label, noteId, notes, projectDir, removeNote, tree } from "../brain/store";
+import * as ws from "../brain/workspace";
+
 beforeEach(() => {
   root = tmp();
   process.env.ALT_HOME = path.join(root, "home");
   process.env.ALT_CLAUDE_HOME = path.join(root, "claude-default");
+  reinforce.reset();
 });
-
-// Load after ALT_HOME is set; paths are read on every call, so one import serves every test.
-import { Brain } from "../brain/brain";
-import { findTokens, redact } from "../brain/redact";
-import { loadIndex, readTranscript, refresh, removeSession, renameProfileSessions, typedText } from "../brain/sessions";
-import { loadLabels, renameProfileLabels, saveLabels } from "../brain/sorting";
-import { addNote, label, notes, projectDir, removeNote, tree } from "../brain/store";
-import * as ws from "../brain/workspace";
 
 function transcript(configDir: string, folder: string, id: string, lines: object[]): string {
   const dir = path.join(configDir, "projects", folder.replace(/[^A-Za-z0-9]/g, "-"));
@@ -103,10 +105,63 @@ test("the brain finds sessions from every profile and draws them with notes and 
   assert.equal(kinds("session").length, 2);
   assert.ok(kinds("topic").some((n) => n.label === "docker"));
 
+  // Every note and session gets a place on the map by meaning and a topic cluster, the same each time.
+  const drawn = brain.graph(shop);
+  const placed = drawn.nodes.filter((n) => n.kind === "note" || n.kind === "session");
+  assert.ok(placed.length && placed.every((n) => n.semantic && Math.abs(n.semantic[0]) <= 1 && Math.abs(n.semantic[1]) <= 1 && typeof n.cluster === "number"));
+  assert.ok(drawn.nodes.filter((n) => n.kind === "project" || n.kind === "topic").every((n) => n.semantic === undefined), "hubs and topics move freely");
+  assert.equal(drawn.clusters.length, Math.max(...placed.map((n) => n.cluster!)) + 1, "a name for every cluster");
+  assert.deepEqual(brain.graph(shop), drawn);
+
   const found = brain.search("docker build");
   assert.equal(found[0].kind, "session");
   assert.ok(found.some((m) => m.kind === "note"));
   assert.match(brain.projectSummary(shop), /Docker images are built in CI[\s\S]*why is the docker build slow/);
+});
+
+test("sessions with the same project and short label are drawn as one node with a count, resuming the newest", () => {
+  const shop = path.join(root, "shop");
+  fs.mkdirSync(shop);
+  const workspace = ws.load();
+  const work = ws.addProfile(workspace, "Work");
+  transcript(work.configDir!, shop, "older", [
+    { type: "ai-title", aiTitle: "Fix the cart total" },
+    user("the cart is wrong", shop, { timestamp: "2026-10-10T09:00:00Z" }),
+  ]);
+  transcript(work.configDir!, shop, "newer", [
+    { type: "ai-title", aiTitle: "Fix the cart total" },
+    user("still wrong after the last fix", shop, { timestamp: "2026-10-12T09:00:00Z" }),
+  ]);
+  const brain = new Brain(() => ws.sources(workspace));
+  brain.update();
+
+  const sessionNodes = brain.graph(shop).nodes.filter((n) => n.kind === "session");
+  assert.equal(sessionNodes.length, 1, "two near-identical sessions become one node");
+  assert.equal(sessionNodes[0].count, 2);
+  assert.match(sessionNodes[0].detail, /session ×2/);
+  assert.equal(sessionNodes[0].resume?.id, "newer", "the node resumes the most recent of the merged sessions");
+});
+
+test("a node's importance rises with how it is linked, including by what was recalled together before", async () => {
+  const shop = path.join(root, "shop");
+  fs.mkdirSync(shop);
+  addNote(shop, "Payments use Stripe in test mode", "manual");
+  addNote(shop, "Stripe webhooks retry with backoff", "manual");
+  addNote(shop, "The office plant needs watering", "manual");
+  const brain = new Brain(() => ws.sources(ws.load()));
+  brain.update();
+
+  const before = brain.graph(shop).nodes.filter((n) => n.kind === "note");
+  const stripeNote = before.find((n) => n.text.includes("Stripe in test mode"))!;
+  const plantNote = before.find((n) => n.text.includes("plant"))!;
+  // Both Stripe notes share the topic word "stripe" already, so link them further by reinforcement too.
+  await reinforce.touch([noteId(shop, "Payments use Stripe in test mode"), noteId(shop, "Stripe webhooks retry with backoff")]);
+
+  const after = brain.graph(shop).nodes.filter((n) => n.kind === "note");
+  const stripeAfter = after.find((n) => n.id === stripeNote.id)!;
+  const plantAfter = after.find((n) => n.id === plantNote.id)!;
+  assert.ok(stripeAfter.importance! > plantAfter.importance!, "the better-linked note outranks the isolated one");
+  assert.ok(stripeAfter.importance! <= 1 && plantAfter.importance! >= 0, "importance is normalised");
 });
 
 test("profiles: own config folder, unique names, at most six, never zero", () => {
@@ -223,7 +278,7 @@ test("the MCP server answers like Claude Code expects and shares the brain", asy
   assert.match(init.result.instructions, /long-term memory/);
   send({ jsonrpc: "2.0", method: "notifications/initialized" });
   send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-  assert.deepEqual((await waitFor(2)).result.tools.map((t: any) => t.name), ["remember", "recall", "project_memory", "forget", "list_terminals", "read_terminal", "message_terminal"]);
+  assert.deepEqual((await waitFor(2)).result.tools.map((t: any) => t.name), ["remember", "recall", "project_memory", "forget", "list_terminals", "read_terminal", "message_terminal", "hand_task", "update_task", "task_board"]);
   send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "remember", arguments: { note: "Payments use Stripe test mode" } } });
   assert.match((await waitFor(3)).result.content[0].text, /Remembered/);
   send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "recall", arguments: { query: "stripe" } } });

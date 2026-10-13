@@ -56,6 +56,16 @@ export const KITS: Kit[] = [
       "Changes to headers or reflected types need a full rebuild, not Live Coding; say when. For errors, ask for the Output Log or build log lines. After a change, say what to do in the Editor to test it.",
   },
   {
+    id: "blender",
+    name: "3D Modelling (Blender)",
+    prompt:
+      "This is Blender-to-engine 3D asset work, scripted and headless. If the project has its own 3D AI brain under Docs (often Docs/AI Artist/3D AI), read its README.md first, then core/HARD_RULES.md and the matching projects file for this game, before touching anything, and look up craft facts by keyword in knowledge/INDEX.md instead of reading it whole. " +
+      "Fill an asset brief before modelling: state what each reference image controls (pose, proportions, material or colour) and let the project owner correct it. Use real-world dimensions from cited sources, written into the script header, never eyeballed. Never invent a colour outside the shared palette module. " +
+      "Build shells with extrude, loft, solidify, boolean and bevel, not boxes, and get the real silhouette right before adding detail. Batch bpy.ops calls instead of one call per part, since Blender re-evaluates the whole scene on every call. Pass Blender absolute output paths, since a relative path resolves against the drive root instead of the project folder. " +
+      "Mirror an axis only at export time and then verify orientation in the engine against an asymmetric landmark, since an engine such as Unity can negate an axis on import. A validator pass proves geometry, never beauty, and judging whether an asset looks right, or changing a gameplay size, stays a decision for the project owner: flag it, do not decide it. " +
+      "Never drive, recompile or import into a running DCC or game editor that the owner is using. After a change, say which script to run and where the exported file lands.",
+  },
+  {
     id: "desktop",
     name: "Desktop app",
     prompt:
@@ -158,6 +168,7 @@ export function detectKit(folder: string): string {
     // Unreadable: the checks by name below still work.
   }
   if (files.some((name) => name.toLowerCase().endsWith(".uproject"))) return "unreal";
+  if (files.some((name) => name.toLowerCase().endsWith(".blend")) || exists(folder, "Docs", "AI Artist", "3D AI")) return "blender";
   const pkg = packageJson(folder);
   const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) };
   if (exists(folder, "pubspec.yaml") || (exists(folder, "android") && exists(folder, "ios")) || deps["react-native"] || deps["expo"] || deps["@capacitor/core"]) return "mobile";

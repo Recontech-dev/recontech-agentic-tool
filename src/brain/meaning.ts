@@ -59,6 +59,12 @@ async function request(texts: string[]): Promise<number[][] | null> {
   }
 }
 
+/** The vectors already worked out for these texts, without asking the model: null for any not in the cache. */
+export function cachedVectors(texts: string[]): (number[] | null)[] {
+  const known = loadCache();
+  return texts.map((t) => known[keyOf(t)] ?? null);
+}
+
 /**
  * Vectors for the texts, or null when Ollama or the model is not available.
  * After a failure it is not asked again for a minute, so searching stays fast.

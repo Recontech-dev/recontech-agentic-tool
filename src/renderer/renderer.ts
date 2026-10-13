@@ -5,7 +5,9 @@ interface Profile { id: string; name: string; color: string; configDir: string |
 interface Workspace { folder: string; profiles: Profile[]; layout: "grid" | "tabs"; fontSize?: number; brainWidth?: number; editorShare?: number; filesOpen?: boolean; voiceOn?: boolean; split?: SplitNode | null; usageBudget?: { session?: number; week?: number } }
 interface GraphNode { id: string; kind: string; label: string; text: string; detail: string; open: boolean;
   color?: string; resume?: { profile: string; id: string; folder: string }; tag?: string; unfinished?: boolean;
-  note?: { folder: string; number: number };
+  note?: { folder: string; number: number }; count?: number; importance?: number;
+  merged?: { profile: string; id: string }[];
+  semantic?: [number, number]; cluster?: number;
   x: number; y: number; vx: number; vy: number }
 interface Match { kind: string; project: string; folder: string; text: string; when: string; resume?: { profile: string; id: string; folder: string } }
 
@@ -559,7 +561,7 @@ async function voiceTranscribeAndAct(blob: Blob): Promise<void> {
     }
     const text = String(answer?.text || "");
     if (!text) return;
-    const heard: { matched: boolean; after: string; command: "off" | "sleep" | null; open: { name: string; explicit: boolean } | null } =
+    const heard: { matched: boolean; after: string; command: "off" | "sleep" | null; thanks?: boolean; open: { name: string; explicit: boolean } | null } =
       await api.invoke("voice:wake", text);
     // Outside a conversation only what starts with "Recon" counts; other talk in the room is ignored.
     if (voicePhase === "armed" && !heard.matched) return;
@@ -572,8 +574,9 @@ async function voiceTranscribeAndAct(blob: Blob): Promise<void> {
     }
     if (heard.command === "sleep") {
       if (voicePhase === "talk") {
-        voiceSpeak("Okay.", true);
-        voiceSleep('Okay. Say "Recon" when you need me.');
+        // "Thank you" closes the conversation quietly; "that's all" and the like get a spoken "Okay.".
+        if (!heard.thanks) voiceSpeak("Okay.", true);
+        voiceSleep(heard.thanks ? `You're welcome. Say "Recon" when you need me.` : 'Okay. Say "Recon" when you need me.');
       }
       return;
     }
@@ -968,11 +971,54 @@ function saveSplit(): void {
   api.invoke("ui:save", { split: splitTree });
 }
 
+/*
+ * Tabs by choice, or because the window is too narrow: when a grid would give each terminal less than
+ * about 50 columns by 12 rows, the terminals show as tabs instead, and go back to the grid once there is
+ * room again. The user's own choice (workspace.layout) is never changed by this. A margin between the
+ * two thresholds keeps a window right at the edge from flipping back and forth.
+ */
+const MIN_CELL_W = 420, MIN_CELL_H = 230, NARROW_MARGIN = 1.08;
+let narrow = false;
+const tabbed = () => workspace.layout === "tabs" || narrow;
+/** Whether the terminal area is too small for every terminal in a grid cell of its own. */
+function tooNarrowForGrid(): boolean {
+  const n = workspace?.profiles.length ?? 0;
+  const work = $("work").getBoundingClientRect();
+  if (n < 2 || !work.width || !work.height) return false;
+  const cols = n <= 3 ? n : Math.ceil(n / 2), rows = Math.ceil(n / cols);
+  // The top of the work area also holds the file editor when it is open; only what the panels get counts.
+  const room = $("panels").getBoundingClientRect();
+  const width = work.width / cols, height = (room.height || work.height) / rows;
+  const margin = narrow ? NARROW_MARGIN : 1;
+  return width < MIN_CELL_W * margin || height < MIN_CELL_H * margin;
+}
+/** Shows the terminals as the grid or as tabs, whichever fits now. */
+function applyLayout(): void {
+  const tabs = tabbed();
+  $("work").classList.toggle("tabs", tabs);
+  const layoutButton = $("layout") as HTMLButtonElement;
+  layoutButton.textContent = tabs ? "Grid" : "Tabs";
+  layoutButton.disabled = narrow && workspace.layout !== "tabs";
+  layoutButton.title = layoutButton.disabled
+    ? "The window is too narrow for a grid of terminals, so they show as tabs. Widen the window or hide the brain for the grid."
+    : tabs ? "Show every terminal at once" : "Show one terminal at a time, as tabs";
+}
+/** Checks the room again after the window or a panel changed size; switches only when it must. */
+function checkNarrow(): void {
+  if (!workspace) return;
+  const now = tooNarrowForGrid();
+  if (now === narrow) return;
+  narrow = now;
+  applyLayout();
+  layoutPanels();
+  select(active);
+}
+
 /** Puts the panels in place: as the split tree in grid mode, or one after another for tabs. */
 function layoutPanels(): void {
   const host = $("panels");
   const ids = workspace.profiles.map((p) => p.id);
-  const grid = workspace.layout !== "tabs" && !!workspace.folder;
+  const grid = !tabbed() && !!workspace.folder;
   host.classList.toggle("split", grid);
   if (!grid) {
     host.replaceChildren(...ids.map((id) => terms.get(id)!.panel));
@@ -1048,7 +1094,7 @@ function dropAt(x: number, y: number, id: string): { target: string; zone: DropZ
   const rect = panel.getBoundingClientRect();
   const zone = splitZone(x - rect.left, y - rect.top, rect.width, rect.height);
   // In tabs only one terminal shows, so swapping with it would change nothing visible.
-  if (zone === "center" && workspace.layout === "tabs") return null;
+  if (zone === "center" && tabbed()) return null;
   return { target: panel.dataset.id!, zone, rect };
 }
 
@@ -1127,8 +1173,7 @@ function draggableTerminal(handle: HTMLElement, id: string): void {
 async function dropTerminal(id: string, target: string, zone: DropZone): Promise<void> {
   if (workspace.layout === "tabs") {
     workspace = await api.invoke("workspace:layout", "grid");
-    $("work").classList.remove("tabs");
-    $("layout").textContent = "Tabs";
+    applyLayout();
   }
   const ids = workspace.profiles.map((p) => p.id);
   splitTree = splitDrop(splitReconcile(splitTree ?? workspace.split, ids), id, target, zone);
@@ -1168,8 +1213,8 @@ function render(): void {
   }
   const count = workspace.profiles.length;
   $("panels").style.setProperty("--cols", String(count <= 3 ? count : Math.ceil(count / 2)));
-  $("work").classList.toggle("tabs", workspace.layout === "tabs");
-  $("layout").textContent = workspace.layout === "tabs" ? "Grid" : "Tabs";
+  narrow = tooNarrowForGrid();
+  applyLayout();
   $("folder").textContent = workspace.folder ? workspace.folder.split(/[\\/]/).pop()! : "Choose project folder";
   $("folder").title = workspace.folder || "Folder every terminal starts in";
   $("tabs").textContent = "";
@@ -1505,8 +1550,7 @@ async function switchFolder(folder: string, confirmed = false): Promise<void> {
 }
 $("layout").onclick = async () => {
   workspace = await api.invoke("workspace:layout", workspace.layout === "tabs" ? "grid" : "tabs");
-  $("work").classList.toggle("tabs", workspace.layout === "tabs");
-  $("layout").textContent = workspace.layout === "tabs" ? "Grid" : "Tabs";
+  applyLayout();
   layoutPanels();
   select(active);
 };
@@ -1563,12 +1607,18 @@ $("profileForm").onsubmit = async (event) => {
   active = answer.id;
   render();
 };
+// The terminal area also changes size when the brain is hidden or resized and when the editor opens.
+let narrowFrame = 0;
+new ResizeObserver(() => {
+  if (!narrowFrame) narrowFrame = requestAnimationFrame(() => { narrowFrame = 0; checkNarrow(); });
+}).observe($("work"));
 let resizeTimer = 0;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
   resizeTimer = window.setTimeout(() => {
     // A brain width saved in a wider window must still leave room for the terminals.
     if (workspace?.brainWidth) setBrainWidth(workspace.brainWidth);
+    checkNarrow();
     fitAll();
     resizeMap();
   }, 120);
@@ -1852,6 +1902,7 @@ async function showUsage(): Promise<void> {
     }
     lastUsage = usage;
     showUsageBars();
+    void refreshHandovers();
     // The tiles are only redrawn while they can be seen; they catch up when shown again.
     if ($("brain").hidden || !($("usage") as HTMLDetailsElement).open) return;
     const tiles = $("usageTiles");
@@ -1958,6 +2009,70 @@ function noteLimitState(id: string, tail: string): void {
   if (before?.level === level) return;
   limitStates.set(id, { level, weekly: /weekly/i.test(tail), resets: RESET_TEXT.exec(tail)?.[1].trim() ?? "", at: Date.now() });
   showUsageBars();
+  void refreshHandovers();
+}
+
+/* ---------- Budget hand-over ---------- */
+
+interface HandoverOffer {
+  from: string;
+  near: { which: "session" | "week"; percent: number } | null;
+  tasks: { id: string; title: string; status: string }[];
+  to: { id: string; name: string; role: string }[];
+}
+/** What each terminal near its limit could hand over, as the main process last worked it out. */
+const handoverOffers = new Map<string, HandoverOffer>();
+let handoversBusy = false;
+
+/** Whether a terminal is near its limit: Anthropic's figures, or what its Claude Code printed. */
+function nearOnScreen(id: string): boolean {
+  return !!limitStates.get(id);
+}
+function nearByPlan(id: string): boolean {
+  const limits = lastUsage?.profiles?.[id]?.limits;
+  if (!limits || "error" in limits) return false;
+  return Math.max(limits.session?.percent ?? 0, limits.week?.percent ?? 0) >= 90;
+}
+
+/** Asks the main process what the terminals near a limit could hand over; shown as a button in their bars. */
+async function refreshHandovers(): Promise<void> {
+  if (handoversBusy || !workspace) return;
+  handoversBusy = true;
+  try {
+    let changed = false;
+    for (const profile of workspace.profiles) {
+      const near = nearByPlan(profile.id) || nearOnScreen(profile.id);
+      const offer: HandoverOffer | null = near ? await api.invoke("handover:offer", profile.id, nearOnScreen(profile.id)).catch(() => null) : null;
+      const before = handoverOffers.get(profile.id);
+      if (JSON.stringify(before ?? null) === JSON.stringify(offer)) continue;
+      changed = true;
+      if (offer) handoverOffers.set(profile.id, offer);
+      else handoverOffers.delete(profile.id);
+    }
+    if (changed) showUsageBars();
+  } finally {
+    handoversBusy = false;
+  }
+}
+
+/** The user's click on "Hand over": nothing moves until they confirm it, and the main process checks it all again. */
+async function offerHandover(id: string): Promise<void> {
+  const offer = handoverOffers.get(id);
+  if (!offer?.to.length) return;
+  const to = offer.to[0];
+  const where = offer.near?.percent ? ` is at ${Math.round(offer.near.percent)}% of its ${offer.near.which === "week" ? "weekly" : "session"} limit` : " is near its usage limit";
+  const list = offer.tasks.map((t) => `• ${t.title} (${t.status})`).join("\n");
+  const others = offer.to.length > 1 ? `\n\n(${offer.to.slice(1).map((m) => m.name).join(", ")} could take them too.)` : "";
+  if (!confirm(`${offer.from}${where}.\n\nHand its open ${offer.tasks.length === 1 ? "task" : "tasks"} to ${to.name}${to.role ? ` (${to.role})` : ""}, with a short summary of where things stand?\n\n${list}${others}`)) return;
+  const result = await api.invoke("handover:confirm", id, to.id, nearOnScreen(id));
+  if (result?.error) {
+    toast(result.error, true);
+  } else {
+    toast(`Handed ${result.tasks} ${result.tasks === 1 ? "task" : "tasks"} to ${result.to}${result.queued ? "; the summary arrives as soon as that terminal can take it" : ""}.`);
+  }
+  handoverOffers.delete(id);
+  showUsageBars();
+  void refreshHandovers();
 }
 
 /** A small bar filled to used/budget: amber from 80%, red at or over the budget. */
@@ -2113,7 +2228,18 @@ function showUsageBars(): void {
     const browser = browserOn ? part(`browser${clash ? " clash" : ""}`, clash ? "Browser on · other account?" : "Browser on", "🌐") : null;
     if (browser) browser.title = (clash || "Claude Code here can use your Chrome through the Claude in Chrome extension.") +
       " Run /chrome in the terminal to see the connection and choose which browser it uses.";
-    bar.replaceChildren(...[week, session, until, browser, status].filter((el): el is HTMLSpanElement => !!el));
+    const offer = handoverOffers.get(id);
+    let handover: HTMLSpanElement | null = null;
+    if (offer?.to.length) {
+      handover = document.createElement("span");
+      handover.className = "handover";
+      const button = document.createElement("button");
+      button.textContent = `Hand over ${offer.tasks.length} ${offer.tasks.length === 1 ? "task" : "tasks"}…`;
+      button.title = `Near its limit: offer its open tasks to ${offer.to[0].name}. Nothing is sent until you confirm.`;
+      button.onclick = () => void offerHandover(id);
+      handover.append(button);
+    }
+    bar.replaceChildren(...[week, session, until, browser, handover, status].filter((el): el is HTMLSpanElement => !!el));
     bar.title = (plan
       ? `Anthropic: ${limitText(plan.session)} of the session limit${resetText(plan.session) ? ` (starts over ${resetText(plan.session)})` : ""}, ` +
         `${limitText(plan.week)} of the weekly limit${resetText(plan.week) ? ` (starts over ${resetText(plan.week)})` : ""}. This is what the Claude app shows.\n`
@@ -2299,7 +2425,13 @@ $("filter").addEventListener("change", () => {
 
 function showSorting(state: { status: string; [key: string]: any }): void {
   const on = state.status !== "off";
-  $("sorting").textContent = `Smart sorting: ${on ? "on" : "off"}`;
+  // A long and a short wording; a narrow brain panel shows the short one instead of cutting it off.
+  const long = document.createElement("span"), short = document.createElement("span");
+  long.className = "long";
+  long.textContent = "Smart sorting";
+  short.className = "short";
+  short.textContent = "Sorting";
+  $("sorting").replaceChildren(long, short, `: ${on ? "on" : "off"}`);
   const mb = (bytes: number) => Math.round(bytes / 1024 ** 2).toLocaleString();
   $("sortingState").textContent =
     state.status === "starting" || state.status === "loading" ? "Loading the sorting model. This can take a minute or two after the app starts..."
@@ -2318,6 +2450,16 @@ $("sorting").onclick = async () => {
 
 /* ---------- Brain search ---------- */
 
+/** The node for a session, whether it still has its own circle or was folded into a merged one. */
+const sessionNode = (ref: { profile: string; id: string }): GraphNode | undefined =>
+  nodes.find((n) => (n.resume?.profile === ref.profile && n.resume?.id === ref.id) || n.merged?.some((m) => m.profile === ref.profile && m.id === ref.id));
+/** The note node a note match refers to: same project and text (notes carry no id of their own to match by). */
+const noteNode = (match: Match): GraphNode | undefined =>
+  nodes.find((n) => n.kind === "note" && n.text === match.text && n.detail.includes(` ${match.project} `));
+
+/** The nodes a search just found, so the picture can light them up too, not only the results list. */
+let searchLit: Set<GraphNode> | null = null;
+
 let searchTimer = 0;
 /** Counts searches, so an answer that arrives after a newer search was started is dropped. */
 let searchNumber = 0;
@@ -2327,10 +2469,17 @@ $("search").addEventListener("input", () => {
   searchTimer = window.setTimeout(async () => {
     const query = ($("search") as HTMLInputElement).value.trim();
     const results = $("results");
-    if (!query) return void (results.textContent = "");
+    if (!query) {
+      results.textContent = "";
+      searchLit = null;
+      wake();
+      return;
+    }
     const { matches, byMeaning }: { matches: Match[]; byMeaning: boolean } = await api.invoke("brain:search", query);
     if (number !== searchNumber) return;
     results.textContent = "";
+    searchLit = new Set(matches.flatMap((m) => (m.resume ? sessionNode(m.resume) : noteNode(m)) ?? []));
+    wake();
     if (!matches.length) {
       results.innerHTML = '<div class="result dim">Nothing matches.</div>';
       return;
@@ -2353,7 +2502,7 @@ $("search").addEventListener("input", () => {
       if (match.resume) {
         // A session: clicking it picks it out in the picture; the button continues it.
         const ref = match.resume;
-        const node = nodes.find((n) => n.id === `s:${ref.profile}:${ref.id}`);
+        const node = sessionNode(ref);
         if (node) {
           item.classList.add("go");
           item.title = "Show it in the picture";
@@ -2376,6 +2525,25 @@ $("search").addEventListener("input", () => {
     // New results start at the top, where the best matches are, not where the last list was scrolled to.
     results.scrollTop = 0;
   }, 200);
+});
+
+/** The last query whose results were used, so each finished search is counted once. */
+let finishedQuery = "";
+/**
+ * A search the user finished (Enter, or a result clicked) counts as a recall: what it found is
+ * strengthened in the brain. The searches run while typing never are, or half-typed words would count.
+ */
+function searchFinished(): void {
+  const query = ($("search") as HTMLInputElement).value.trim();
+  if (!query || query === finishedQuery) return;
+  finishedQuery = query;
+  void api.invoke("brain:search", query, true).catch(() => {});
+}
+$("search").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") searchFinished();
+});
+$("results").addEventListener("click", (event) => {
+  if ((event.target as HTMLElement).closest(".result:not(.dim)")) searchFinished();
 });
 
 /* ---------- Brain graph ---------- */
@@ -2404,19 +2572,106 @@ const labelWidths = new Map<string, number>();
 const MARGIN = 36;
 const MAX_SCALE = 1.4;
 const MIN_SCALE = 0.15;
+/** In a very small canvas (the brain panel of a minimum-size window), fitting may go further out than zooming by hand, so everything is still in view. */
+const TINY_FIT_SCALE = 0.04;
+const fitFloor = () => (width < 280 || height < 220 ? TINY_FIT_SCALE : MIN_SCALE);
+/** The smallest scale nodes are spaced for; see separate(). */
+const SEPARATE_AT_LEAST = MIN_SCALE;
 
-const radius = (n: GraphNode) => (n.kind === "project" ? 14 : n.kind === "topic" ? 7 : n.kind === "session" ? 6 : 5);
+/*
+ * Two ways to lay the picture out and two ways to colour it. "links" is the force layout of projects,
+ * notes, sessions and shared topics; "meaning" places every note and session by what it is about (the
+ * brain's map by meaning), so related work sits together whatever project it is in. Colour is by kind,
+ * or by topic cluster. Kept per computer.
+ */
+type LayoutMode = "links" | "meaning";
+type ColourMode = "kind" | "cluster";
+const LAYOUT_KEY = "graphLayout", COLOUR_KEY = "graphColour";
+const stored = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
+const store = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* not remembered */ } };
+let layoutMode: LayoutMode = stored(LAYOUT_KEY) === "meaning" ? "meaning" : "links";
+let colourMode: ColourMode = stored(COLOUR_KEY) === "cluster" ? "cluster" : "kind";
+/** The brain's short name for each topic cluster, by cluster number. */
+let clusterNames: string[] = [];
+// No orange: that is the shared-topic colour, which would read as one more cluster.
+// Twelve, as many clusters as splitting can make (graphmath.splitLarge).
+const CLUSTER_COLOURS = ["#67c23a", "#d16ba5", "#4fc1c9", "#a78bfa", "#f87171", "#e0d45a", "#94a3b8", "#c9a26b", "#2dd4bf", "#f472b6", "#a3e635", "#818cf8"];
+const clusterColour = (c: number) => CLUSTER_COLOURS[c % CLUSTER_COLOURS.length];
+const inCluster = (n: GraphNode) => n.cluster !== undefined && n.cluster >= 0 && !!n.semantic;
+
+/*
+ * Semantic zoom, in the meaning layout only (only there does a cluster's work sit together): zoomed
+ * out, each topic cluster is drawn as one labelled circle with its count, near the middle of its members,
+ * and zooming in shows the members again where they were. Clicking a cluster zooms in on it.
+ * Fitted to the panel (not zoomed by hand), the picture is zoomed out when every node would be too
+ * small to read; that is judged from where the nodes are, not from the camera, so fitting the zoomed-out
+ * picture cannot flip it back. Zoomed by hand, it opens up past 1.4 times the zoomed-out view's scale and
+ * closes again under 1.15 times, so a scale at the edge does not flicker.
+ */
+const COLLAPSE_BELOW = 0.45;
+let collapsed = false;
+/** The scale the zoomed-out picture was last fitted at. */
+let overviewScale = 0;
+/** The scale that would fit every node's circle in the panel, from positions alone (labels allowed for roughly). */
+function allFitScale(): number {
+  if (!nodes.length || !width || !height) return 1;
+  const xs = nodes.map((n) => n.x), ys = nodes.map((n) => n.y);
+  const spanX = Math.max(...xs) - Math.min(...xs) + 220, spanY = Math.max(...ys) - Math.min(...ys) + 40;
+  return Math.min((width - 2 * MARGIN) / spanX, (height - 2 * MARGIN) / spanY);
+}
+function collapsing(): boolean {
+  if (layoutMode !== "meaning" || clusterNames.length < 2) return (collapsed = false);
+  if (!camera.manual) return (collapsed = allFitScale() < COLLAPSE_BELOW);
+  if (collapsed && camera.scale > overviewScale * 1.4) collapsed = false;
+  else if (!collapsed && camera.scale < overviewScale * 1.15) collapsed = true;
+  return collapsed;
+}
+/**
+ * One stand-in circle per topic cluster for the zoomed-out picture. They are kept from frame to frame and
+ * take part in the layout like any node, held by a spring to the middle of their members (`home`), so
+ * they settle clear of each other and of the projects, near where their work is.
+ */
+const bubbleNodes = new Map<number, GraphNode & { home: [number, number] }>();
+function clusterBubbles(): (GraphNode & { home: [number, number] })[] {
+  const groups = new Map<number, GraphNode[]>();
+  for (const n of nodes) if (inCluster(n)) groups.set(n.cluster!, [...(groups.get(n.cluster!) ?? []), n]);
+  for (const c of [...bubbleNodes.keys()]) if (!groups.has(c)) bubbleNodes.delete(c);
+  return [...groups.entries()].sort((a, b) => a[0] - b[0]).map(([c, members]) => {
+    const home: [number, number] = [members.reduce((sum, m) => sum + m.x, 0) / members.length, members.reduce((sum, m) => sum + m.y, 0) / members.length];
+    const bubble = bubbleNodes.get(c) ?? { id: `c:${c}`, kind: "cluster", open: false, x: home[0], y: home[1], vx: 0, vy: 0, home } as GraphNode & { home: [number, number] };
+    Object.assign(bubble, {
+      label: clusterNames[c] ?? `topic ${c + 1}`, count: members.length, cluster: c, home,
+      text: members.slice(0, 12).map((m) => m.label).join(", ") + (members.length > 12 ? ", …" : ""),
+      detail: `topic cluster · ${members.length} notes and sessions · click to zoom in`,
+    });
+    bubbleNodes.set(c, bubble);
+    return bubble;
+  });
+}
+/** Zoomed out by meaning, a cluster's members and the shared-topic words are left to the zoomed-in picture. */
+const hiddenWhenOut = (n: GraphNode) => inCluster(n) || n.kind === "topic";
+/** What is drawn and can be pointed at now: every node, or, zoomed out by meaning, the clusters in place of their members. */
+const visible = (): GraphNode[] => (collapsing() ? [...nodes.filter((n) => !hiddenWhenOut(n)), ...clusterBubbles()] : nodes);
+
+/** A merged session node (duplicate or near-identical sessions folded into one) carries a count badge. */
+const displayLabel = (n: GraphNode) => (n.count && n.count > 1 ? `${n.label} ×${n.count}` : n.label);
+const baseRadius = (n: GraphNode) =>
+  n.kind === "cluster" ? 14 + 4 * Math.sqrt(n.count ?? 1) : n.kind === "project" ? 14 : n.kind === "topic" ? 7 : n.kind === "session" ? 6 : 5;
+// A more central node (by the brain's PageRank-style score) reads as a hub: up to 60% bigger at the top end.
+const radius = (n: GraphNode) => baseRadius(n) * (1 + 0.6 * (n.importance ?? 0));
 const colour = (n: GraphNode) =>
-  n.kind === "project" ? css("--project") : n.kind === "topic" ? css("--topic") : n.open ? css("--open")
+  n.kind === "cluster" ? clusterColour(n.cluster ?? 0)
+  : colourMode === "cluster" && inCluster(n) ? clusterColour(n.cluster!)
+  : n.kind === "project" ? css("--project") : n.kind === "topic" ? css("--topic") : n.open ? css("--open")
   : n.kind === "session" ? n.color || css("--session") : css("--note");
-const fontSize = (n: GraphNode) => (n.kind === "project" ? 12 : 11);
-const font = (n: GraphNode, size = fontSize(n)) => `${n.kind === "project" ? "600 " : ""}${size}px system-ui, sans-serif`;
+const fontSize = (n: GraphNode) => (n.kind === "project" || n.kind === "cluster" ? 12 : 11);
+const font = (n: GraphNode, size = fontSize(n)) => `${n.kind === "project" || n.kind === "cluster" ? "600 " : ""}${size}px system-ui, sans-serif`;
 
 function labelWidth(n: GraphNode): number {
-  const key = n.kind + "\u0000" + n.label;
+  const key = n.kind + "\u0000" + displayLabel(n);
   if (!labelWidths.has(key)) {
     ctx.font = font(n);
-    labelWidths.set(key, ctx.measureText(n.label).width);
+    labelWidths.set(key, ctx.measureText(displayLabel(n)).width);
   }
   return labelWidths.get(key)!;
 }
@@ -2432,18 +2687,20 @@ const ringGap = (n: GraphNode) => ((n.kind === "project" && n.open) || n.unfinis
  * out from what is drawn on screen and then turned into world units, so it stays right when circles
  * and project names stop shrinking at a minimum size. A label that is too small to be drawn gets no room.
  */
-function box(n: GraphNode): [number, number, number, number] {
-  const s = camera.scale, k = Math.min(s, 1.2);
-  const r = drawnRadius(n) + ringGap(n), half = Math.max(r, 8 * k);
-  const size = fontSize(n) * k, drawn = n.kind === "project" ? Math.max(size, 10) : size;
-  const label = n.kind === "project" || size >= 7 ? 4 * k + labelWidth(n) * (drawn / fontSize(n)) + 3 : 0;
+function box(n: GraphNode, s = camera.scale): [number, number, number, number] {
+  const k = Math.min(s, 1.2);
+  const r = Math.max(radius(n) * k, radius(n) * 0.6, 2) + ringGap(n), half = Math.max(r, 8 * k);
+  // Projects and clusters are always labelled, at a readable size, so their labels always get room.
+  const always = n.kind === "project" || n.kind === "cluster";
+  const size = fontSize(n) * k, drawn = always ? Math.max(size, 10) : size;
+  const label = always || size >= 7 ? 4 * k + labelWidth(n) * (drawn / fontSize(n)) + 3 : 0;
   return [n.x - (r + 3) / s, n.y - (half + 3) / s, n.x + (r + 3 + label) / s, n.y + (half + 3) / s];
 }
 
-/** The space the whole picture takes up, in world units: [left, top, right, bottom]. */
-function extent(): [number, number, number, number] {
+/** The space the whole picture (or the given nodes) takes up, in world units: [left, top, right, bottom]. */
+function extent(list: GraphNode[] = nodes): [number, number, number, number] {
   let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-  for (const n of nodes) {
+  for (const n of list) {
     const [l, t, r, b] = box(n);
     left = Math.min(left, l); top = Math.min(top, t); right = Math.max(right, r); bottom = Math.max(bottom, b);
   }
@@ -2484,6 +2741,7 @@ function updateGraph(data: { nodes: GraphNode[]; links: { source: string; target
   }
   if (selected && !byId.has(selected.id)) selected = null;
   if (hovered && !byId.has(hovered.id)) hovered = null;
+  if (searchLit) searchLit = new Set([...searchLit].filter((n) => byId.has(n.id)));
   if (nodes.length !== old.size) heat = 1;
   wake();
 }
@@ -2496,17 +2754,33 @@ function step(): void {
     for (let j = i + 1; j < count; j++) {
       const a = nodes[i], b = nodes[j];
       let dx = a.x - b.x, dy = a.y - b.y;
-      const strength = a.kind === "project" && b.kind === "project" ? 30000 : 5000;
-      const d2 = dx * dx + dy * dy + 0.01, force = Math.min(strength / d2, 8), d = Math.sqrt(d2);
+      // Two project hubs push each other apart hard, and keep pushing at close range (a higher cap),
+      // so they stay spaced out instead of clumping or pulling into another project's cluster.
+      // By meaning, the map places things; there the hubs are ordinary nodes.
+      const bothProjects = layoutMode === "links" && a.kind === "project" && b.kind === "project";
+      const strength = bothProjects ? 90000 : 5000, cap = bothProjects ? 30 : 8;
+      const d2 = dx * dx + dy * dy + 0.01, force = Math.min(strength / d2, cap), d = Math.sqrt(d2);
       dx /= d; dy /= d;
       a.vx += dx * force; a.vy += dy * force; b.vx -= dx * force; b.vy -= dy * force;
 
     }
   }
+  // By meaning, the links only nudge: each note and session is held near its place on the map instead.
+  const linkPull = layoutMode === "meaning" ? 0.004 : 0.02;
   for (const { a, b } of links) {
     const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) + 0.01;
-    const rest = a.kind === "project" || b.kind === "project" ? 90 : 140, pull = (d - rest) * 0.02;
+    const rest = a.kind === "project" || b.kind === "project" ? 90 : 140, pull = (d - rest) * linkPull;
     a.vx += (dx / d) * pull; a.vy += (dy / d) * pull; b.vx -= (dx / d) * pull; b.vy -= (dy / d) * pull;
+  }
+  if (layoutMode === "meaning") {
+    // The map's -1..1 is spread wider the more there is on it, so the circles have room, but not much
+    // past the panel itself, or the zoomed-out picture would have to shrink to a speck to fit.
+    const spread = Math.max(120, Math.min(80 + 35 * Math.sqrt(nodes.length), Math.min(width, height) * 0.9));
+    for (const n of nodes) {
+      if (!n.semantic || n === dragged) continue;
+      n.vx += (n.semantic[0] * spread - n.x) * 0.06;
+      n.vy += (n.semantic[1] * spread - n.y) * 0.06;
+    }
   }
   // The pull to the middle is stronger along the picture's longer side, compared with the canvas,
   // so the network takes the canvas's shape and fills it instead of a narrow band across it.
@@ -2518,7 +2792,19 @@ function step(): void {
     if (n !== dragged) { n.x += n.vx * heat; n.y += n.vy * heat; }
     n.vx *= 0.8; n.vy *= 0.8;
   }
-  for (let pass = 0; pass < 4; pass++) separate();
+  // Zoomed out by meaning, only what is drawn needs room; the hidden members keep their places on the map.
+  if (collapsing()) {
+    const bubbles = clusterBubbles();
+    for (const b of bubbles) {
+      b.x += (b.home[0] - b.x) * 0.08;
+      b.y += (b.home[1] - b.y) * 0.08;
+    }
+    const shown = [...nodes.filter((n) => !hiddenWhenOut(n)), ...bubbles];
+    for (let pass = 0; pass < 8; pass++) separate(shown, undefined, true);
+  } else {
+    bubbleNodes.clear();
+    for (let pass = 0; pass < 4; pass++) separate();
+  }
   // Cool down slowly, then stop completely, so the picture comes to rest instead of trembling forever.
   heat = heat > 0.02 ? heat * 0.995 : heat * 0.9;
   fitCamera();
@@ -2529,57 +2815,177 @@ function step(): void {
   quietFrames = moved ? 0 : quietFrames + 1;
 }
 
+/** The legend under the picture: what the colours mean in the current colouring, and the two switches. */
+function showLegend(): void {
+  const legend = $("legend");
+  const swatch = (colourValue: string, text: string, className = "") => {
+    const span = document.createElement("span");
+    span.style.setProperty("--c", colourValue);
+    span.textContent = text;
+    if (className) span.className = className;
+    return span;
+  };
+  const items = colourMode === "cluster" && clusterNames.length
+    ? [swatch("var(--project)", "project"), ...clusterNames.map((name, c) => swatch(clusterColour(c), name))]
+    : [swatch("var(--project)", "project"), swatch("var(--session)", "past session"), swatch("var(--note)", "note"),
+      swatch("var(--topic)", "shared topic"), swatch("var(--open)", "open now"), swatch("", "unfinished", "ring")];
+  const toggle = (id: string, text: string, title: string, onclick: () => void) => {
+    const button = document.createElement("button");
+    button.id = id;
+    button.className = "graphmode";
+    button.textContent = text;
+    button.title = title;
+    button.onclick = onclick;
+    return button;
+  };
+  // The two switches stay together at the end of the legend, so they wrap as one.
+  const modes = document.createElement("span");
+  modes.className = "modes";
+  modes.append(
+    toggle("graphLayout", layoutMode === "meaning" ? "Layout: meaning" : "Layout: links",
+      "Links: projects, notes and sessions held together by what links them. Meaning: placed by what they are about, so related work sits together; zoom out to see whole topics.",
+      () => {
+        layoutMode = layoutMode === "meaning" ? "links" : "meaning";
+        store(LAYOUT_KEY, layoutMode);
+        camera.manual = false;
+        heat = 1;
+        wake();
+        showLegend();
+      }),
+    toggle("graphColour", colourMode === "cluster" ? "Colour: topic" : "Colour: kind",
+      "Kind: colour by project, session, note and topic. Topic: colour notes and sessions by the topic cluster they belong to.",
+      () => {
+        colourMode = colourMode === "cluster" ? "kind" : "cluster";
+        store(COLOUR_KEY, colourMode);
+        wake();
+        showLegend();
+      }));
+  legend.replaceChildren(...items, modes);
+}
+showLegend();
+
 /** No overlaps: where two nodes' boxes (circle plus label) touch, move them apart along the shorter way out. */
-function separate(): void {
-  const boxes = nodes.map(box);
-  for (let i = 0; i < nodes.length; i++) {
-    for (let j = i + 1; j < nodes.length; j++) {
+function separate(list: GraphNode[] = nodes, fixed?: Set<GraphNode>, circlesOnly = false): void {
+  // Circles only: a label's room is screen-sized, so in world units it grows as the picture shrinks;
+  // where the picture is fitted from positions (zoomed out by meaning) it must not push nodes apart.
+  // Room is measured as if the picture were at least MIN_SCALE: below that (only when a small canvas is fitted), room kept for screen-sized
+  // circles and labels would grow without end in world units and blow the picture apart as it shrinks
+  // (labels that would then collide on screen are left out when drawn instead).
+  const s = Math.max(camera.scale, SEPARATE_AT_LEAST);
+  const measure = circlesOnly
+    ? (n: GraphNode): [number, number, number, number] => {
+      const r = (Math.max(radius(n) * Math.min(s, 1.2), radius(n) * 0.6, 2) + ringGap(n) + 3) / s;
+      return [n.x - r, n.y - r, n.x + r, n.y + r];
+    }
+    : (n: GraphNode) => box(n, s);
+  const boxes = list.map(measure);
+  const still = (n: GraphNode) => n === dragged || !!fixed?.has(n);
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
       const a = boxes[i], b = boxes[j];
       const overlapX = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
       const overlapY = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
       if (overlapX <= 0 || overlapY <= 0) continue;
-      const first = nodes[i], second = nodes[j];
-      // A node being dragged stays under the mouse; the other one moves the whole way.
-      const shareFirst = first === dragged ? 0 : second === dragged ? 1 : 0.5;
+      const first = list[i], second = list[j];
+      if (still(first) && still(second)) continue;
+      // A node being dragged (or held in place) stays put; the other one moves the whole way.
+      const shareFirst = still(first) ? 0 : still(second) ? 1 : 0.5;
       let dx = 0, dy = 0;
       if (overlapY < overlapX) dy = (overlapY + 1) * (a[1] + a[3] < b[1] + b[3] ? -1 : 1);
       else dx = (overlapX + 1) * (a[0] + a[2] < b[0] + b[2] ? -1 : 1);
       first.x += dx * shareFirst; first.y += dy * shareFirst;
       second.x -= dx * (1 - shareFirst); second.y -= dy * (1 - shareFirst);
-      boxes[i] = box(first);
-      boxes[j] = box(second);
+      boxes[i] = measure(first);
+      boxes[j] = measure(second);
     }
   }
 }
 
-/** Move the camera a little towards the view that shows every node and label. */
+/**
+ * The camera that shows the given nodes, circles and labels, as big as the canvas allows: for a scale s
+ * a node's place on screen is its position times s plus its circle and label in pixels, so labels are
+ * counted at their real size on screen instead of being turned into world units (where they would grow
+ * as the picture shrinks, and pin the scale at its minimum). The largest scale that fits is found by
+ * halving the interval; the centre follows from the same bounds.
+ */
+function fitTo(list: GraphNode[], withLabels = true): { x: number; y: number; scale: number } {
+  const footprint = (n: GraphNode, s: number) => {
+    const k = Math.min(s, 1.2);
+    const r = Math.max(radius(n) * k, radius(n) * 0.6, 2) + ringGap(n) + 3;
+    const always = n.kind === "project" || n.kind === "cluster";
+    const size = fontSize(n) * k, drawn = always ? Math.max(size, 10) : size;
+    const label = withLabels && (always || size >= 7) ? 4 * k + labelWidth(n) * (drawn / fontSize(n)) + 3 : 0;
+    return { left: r, right: r + label, half: Math.max(r, 8 * k + 3) };
+  };
+  const bounds = (s: number) => {
+    let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+    for (const n of list) {
+      const f = footprint(n, s);
+      left = Math.min(left, n.x * s - f.left); right = Math.max(right, n.x * s + f.right);
+      top = Math.min(top, n.y * s - f.half); bottom = Math.max(bottom, n.y * s + f.half);
+    }
+    return { left, right, top, bottom };
+  };
+  const fits = (s: number) => {
+    const b = bounds(s);
+    return b.right - b.left <= width - 2 * MARGIN && b.bottom - b.top <= height - 2 * MARGIN;
+  };
+  // A canvas narrower than a single label fits no scale: then the circles are fitted, and labels that
+  // would run off the edge are left out when drawn.
+  const floor = fitFloor();
+  if (withLabels && !fits(floor)) return fitTo(list, false);
+  let scale = floor;
+  if (fits(MAX_SCALE)) scale = MAX_SCALE;
+  else if (fits(floor)) {
+    let low = floor, high = MAX_SCALE;
+    for (let i = 0; i < 24; i++) {
+      const mid = (low + high) / 2;
+      if (fits(mid)) low = mid; else high = mid;
+    }
+    scale = low;
+  }
+  const b = bounds(scale);
+  return { x: (b.left + b.right) / 2 / scale, y: (b.top + b.bottom) / 2 / scale, scale };
+}
+
+/** Move the camera a little towards the view that shows every node and label (zoomed out by meaning: what is drawn). */
 function fitCamera(): void {
   if (camera.manual || !nodes.length || !width || !height) return;
-  const [left, top, right, bottom] = extent();
-  const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, (width - 2 * MARGIN) / (right - left), (height - 2 * MARGIN) / (bottom - top)));
-  camera.x += ((left + right) / 2 - camera.x) * 0.2;
-  camera.y += ((top + bottom) / 2 - camera.y) * 0.2;
-  camera.scale += (scale - camera.scale) * 0.2;
+  const out = collapsing();
+  const target = fitTo(out ? visible() : nodes);
+  if (out) overviewScale = target.scale;
+  camera.x += (target.x - camera.x) * 0.2;
+  camera.y += (target.y - camera.y) * 0.2;
+  camera.scale += (target.scale - camera.scale) * 0.2;
 }
 
 function draw(): void {
-  const focus = selected || hovered, near = focus ? neighbours.get(focus)! : null;
+  // A cluster circle (zoomed out by meaning) has no links of its own, so it lights nothing else.
+  const focus = selected || hovered, near = focus ? neighbours.get(focus) ?? new Set<GraphNode>() : null;
   // The filter dims every session that does not match; projects, notes and topics stay as they are.
   const matches = (n: GraphNode) => !filter || n.kind !== "session" || (filter === "unfinished" ? !!n.unfinished : n.tag === filter);
-  const lit = (n: GraphNode) => matches(n) && (!focus || n === focus || near!.has(n));
+  // Hovering or selecting a node takes over from a search's highlight; with neither, a live search still lights its own hits.
+  const lit = (n: GraphNode) => {
+    if (!matches(n)) return false;
+    if (focus) return n === focus || near!.has(n);
+    return !searchLit?.size || searchLit.has(n);
+  };
   // Circles and text grow and shrink with the camera, so the gaps kept between them stay visible on screen.
   const k = Math.min(camera.scale, 1.2);
+  const zoomedOut = collapsing();
+  const labels: { n: GraphNode; x: number; y: number; size: number; priority: number; alpha: number }[] = [];
   ctx.clearRect(0, 0, width, height);
   ctx.lineWidth = 1;
   ctx.strokeStyle = css("--line");
   for (const { a, b } of links) {
+    if (zoomedOut && (hiddenWhenOut(a) || hiddenWhenOut(b))) continue;
     const [ax, ay] = toScreen(a.x, a.y), [bx, by] = toScreen(b.x, b.y);
     ctx.globalAlpha = !focus ? 0.7 : a === focus || b === focus ? 1 : 0.1;
     ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
   }
-  for (const n of nodes) {
+  for (const n of zoomedOut ? visible() : nodes) {
     const [x, y] = toScreen(n.x, n.y), r = drawnRadius(n);
-    ctx.globalAlpha = lit(n) ? 1 : 0.15;
+    ctx.globalAlpha = n.kind === "cluster" ? (focus && focus !== n ? 0.5 : 0.9) : lit(n) ? 1 : 0.15;
     ctx.fillStyle = colour(n);
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
     if (n.kind === "project" && n.open) {
@@ -2594,16 +3000,39 @@ function draw(): void {
     }
     // Text too small to read is left out, except for projects and whatever is in focus.
     const textSize = fontSize(n) * k;
-    const important = n.kind === "project" || n === focus || (focus && lit(n));
+    const important = n.kind === "project" || n.kind === "cluster" || n === focus || (focus && lit(n));
     if (textSize >= 7 || important) {
-      ctx.fillStyle = n.kind === "project" || n.kind === "topic" || n.open ? css("--text") : css("--dim");
       const size = Math.max(textSize, important ? 10 : 0);
-      ctx.font = font(n, size);
-      ctx.fillText(n.label, x + r + ringGap(n) + 4 * k, y + size / 3);
+      const priority = n === focus ? 0 : n.kind === "cluster" ? 1 : n.kind === "project" ? 2 : focus && lit(n) ? 3 : 4;
+      labels.push({ n, x: x + r + ringGap(n) + 4 * k, y, size, priority, alpha: ctx.globalAlpha });
     }
+  }
+  // Labels go on after every circle, the most important first; one that would cover a label already
+  // written is left out (pointing at its circle still shows it), except the one in focus.
+  labels.sort((a, b) => a.priority - b.priority);
+  // Cluster circles are big, so no lesser label may lie across one.
+  const circles = labels.filter((l) => l.n.kind === "cluster").map((l) => {
+    const [cx, cy] = toScreen(l.n.x, l.n.y), r = drawnRadius(l.n);
+    return { n: l.n, rect: [cx - r, cy - r, cx + r, cy + r] as [number, number, number, number] };
+  });
+  const placed: [number, number, number, number][] = [];
+  for (const { n, x, y, size, priority, alpha } of labels) {
+    ctx.font = font(n, size);
+    const text = displayLabel(n);
+    const rect: [number, number, number, number] = [x, y - size * 0.75, x + ctx.measureText(text).width, y + size * 0.4];
+    const hits = (p: [number, number, number, number]) => rect[0] < p[2] && p[0] < rect[2] && rect[1] < p[3] && p[1] < rect[3];
+    // Cluster names always show unless another name is in the way; lesser labels also keep off cluster circles.
+    const offCanvas = rect[0] < 0 || rect[2] > width || rect[1] < 0 || rect[3] > height;
+    if (priority > 0 && (offCanvas || placed.some(hits) || (priority > 1 && circles.some((c) => c.n !== n && hits(c.rect))))) continue;
+    placed.push(rect);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = n.kind === "project" || n.kind === "topic" || n.kind === "cluster" || n.open ? css("--text") : css("--dim");
+    ctx.fillText(text, x, y + size / 3);
   }
   ctx.globalAlpha = 1;
 }
+
+interface DupGroup { keep: { text: string; time: string }; drop: { text: string; time: string }[]; similarity: number }
 
 function show(n: GraphNode | null): void {
   const detail = $("detail");
@@ -2655,12 +3084,47 @@ function show(n: GraphNode | null): void {
     };
     detail.append(button, remove);
   }
+  if (n.kind === "project") {
+    const folder = n.text;
+    const button = document.createElement("button");
+    button.id = "resume";
+    button.textContent = "Find duplicate notes";
+    button.onclick = async () => {
+      button.disabled = true;
+      button.textContent = "Looking...";
+      const answer = await api.invoke("note:consolidate:preview", folder);
+      button.disabled = false;
+      button.textContent = "Find duplicate notes";
+      if (answer.error) return toast(answer.error, true);
+      const groups: DupGroup[] = answer.groups;
+      if (!groups.length) return toast("No duplicate notes found.");
+      const list = document.createElement("div");
+      list.className = "dim";
+      for (const group of groups) {
+        const row = document.createElement("div");
+        row.textContent = `Keep: "${group.keep.text}" — drop ${group.drop.length}: ${group.drop.map((d) => `"${d.text}"`).join(", ")} `;
+        const merge = document.createElement("button");
+        merge.textContent = `Merge ${group.drop.length}`;
+        merge.onclick = async () => {
+          if (!confirm(`Remove ${group.drop.length} duplicate note(s), keeping "${group.keep.text}"?`)) return;
+          const result = await api.invoke("note:consolidate:apply", folder, group);
+          if (result.error) return toast(result.error, true);
+          toast(`Removed ${result.removed} duplicate note(s).`);
+          row.remove();
+        };
+        row.append(merge);
+        list.append(row);
+      }
+      detail.append(list);
+    };
+    detail.append(button);
+  }
 }
 
 function pointer(event: PointerEvent | WheelEvent | MouseEvent) {
   const rect = canvas.getBoundingClientRect(), sx = event.clientX - rect.left, sy = event.clientY - rect.top;
   let best: GraphNode | null = null, bestDistance = Infinity;
-  for (const n of nodes) {
+  for (const n of visible()) {
     const [x, y] = toScreen(n.x, n.y);
     const distance = Math.hypot(x - sx, y - sy);
     if (distance < drawnRadius(n) + 6 && distance < bestDistance) { best = n; bestDistance = distance; }
@@ -2691,12 +3155,30 @@ canvas.addEventListener("pointerdown", (event) => {
   const { node, sx, sy } = pointer(event);
   moved = false;
   canvas.setPointerCapture(event.pointerId);
-  if (node) dragged = node;
+  if (node && node.kind !== "cluster") dragged = node;
   else panning = { x: sx, y: sy };
 });
 canvas.addEventListener("pointerup", (event) => {
   wake();
   const { node } = pointer(event);
+  if (!moved && node?.kind === "cluster") {
+    // Zoom in on the cluster's members (the circle itself may sit a little aside, to be read): framed
+    // to fit when they can be, and always far enough in for them to show again.
+    const members = nodes.filter((n) => inCluster(n) && n.cluster === node.cluster);
+    const xs = members.map((m) => m.x), ys = members.map((m) => m.y);
+    const [left, right, top, bottom] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+    camera.x = (left + right) / 2;
+    camera.y = (top + bottom) / 2;
+    const fit = Math.min((width - 2 * MARGIN) / Math.max(1, right - left + 160), (height - 2 * MARGIN) / Math.max(1, bottom - top + 60));
+    // At least 0.8, where the members' names are big enough to be drawn.
+    camera.scale = Math.max(overviewScale * 1.5, 0.8, Math.min(MAX_SCALE, fit));
+    camera.manual = true;
+    selected = hovered = null;
+    dragged = null;
+    panning = null;
+    show(null);
+    return;
+  }
   if (!moved) selected = node && node === selected ? null : node;
   dragged = null;
   panning = null;
@@ -2707,7 +3189,7 @@ canvas.addEventListener("wheel", (event) => {
   event.preventDefault();
   const { sx, sy } = pointer(event);
   const [wx, wy] = toWorld(sx, sy);
-  camera.scale = Math.max(MIN_SCALE, Math.min(4, camera.scale * Math.exp(-event.deltaY * 0.0015)));
+  camera.scale = Math.max(Math.min(MIN_SCALE, camera.scale), Math.min(4, camera.scale * Math.exp(-event.deltaY * 0.0015)));
   // Zoom around the mouse: the point under it stays under it.
   camera.x = wx - (sx - width / 2) / camera.scale;
   camera.y = wy - (sy - height / 2) / camera.scale;
@@ -2719,7 +3201,9 @@ canvas.addEventListener("dblclick", () => {
   heat = Math.max(heat, 0.3);
 });
 api.on("brain:graph", (data) => {
+  clusterNames = Array.isArray(data?.clusters) ? data.clusters.map(String) : [];
   updateGraph(data);
+  showLegend();
   show(selected || hovered);
   showUnfinished();
 });
@@ -3234,11 +3718,17 @@ window.addEventListener("beforeunload", (event) => {
   showUsage();
   setInterval(showUsage, USAGE_REFRESH_MS);
   const frame = () => {
-    if (quietFrames < QUIET_AFTER || dragged || panning) {
-      step();
-      draw();
-    }
+    // The next frame is asked for first, so one failing frame cannot stop the picture for good.
     requestAnimationFrame(frame);
+    if (quietFrames < QUIET_AFTER || dragged || panning) {
+      try {
+        step();
+        draw();
+      } catch (error) {
+        console.error("[graph]", error);
+        quietFrames = QUIET_AFTER;
+      }
+    }
   };
   frame();
 })();

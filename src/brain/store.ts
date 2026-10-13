@@ -11,7 +11,35 @@ import { redact } from "./redact";
 export interface Note {
   time: string;
   text: string;
+  /** Who saved it: "claude-code", "app", ... */
   source: string;
+  /** "research" for something learned (from the web, docs, an experiment) rather than decided; absent for an ordinary note. */
+  kind?: "research";
+  /** Where a research finding came from, so it can be checked again later. */
+  url?: string;
+}
+
+/** Query parameters that carry a credential in a link: dropped from a stored source whatever redact makes of them. */
+const SECRET_PARAM = /token|key|sig|signature|auth|code|session|password|secret|credential/i;
+
+/**
+ * A web address worth keeping as a note's source: http or https only, one line, without a user name,
+ * password, #fragment or secret-looking query parameter, and secrets masked; otherwise "".
+ */
+export function cleanUrl(value: unknown): string {
+  const text = String(value ?? "").trim();
+  if (!text || text.length > 500 || /[\s\x00-\x1f\x7f]/.test(text)) return "";
+  try {
+    const url = new URL(text);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    for (const name of [...url.searchParams.keys()]) if (SECRET_PARAM.test(name)) url.searchParams.delete(name);
+    return redact(url.toString());
+  } catch {
+    return "";
+  }
 }
 
 export interface Project {
@@ -76,7 +104,7 @@ export function normalise(text: string): string {
   return text.toLowerCase().replace(/\s+/g, " ").replace(/[.!?;,\s]+$/g, "").trim();
 }
 
-export function addNote(folder: string, text: string, source: string): string {
+export function addNote(folder: string, text: string, source: string, extra: { kind?: string; url?: string } = {}): string {
   // Saving the same fact twice would only crowd the memory, so a repeat is not added again.
   const same = notes(folder).find((n) => normalise(n.text) === normalise(redact(text.trim())));
   if (same) return same.text;
@@ -84,6 +112,10 @@ export function addNote(folder: string, text: string, source: string): string {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "project.json"), JSON.stringify({ folder: realFolder(folder) }), "utf8");
   const note: Note = { time: stamp(), text: redact(text.trim()), source };
+  // Only research carries a kind; older notes and ordinary ones look exactly as they always did.
+  if (extra.kind === "research") note.kind = "research";
+  const url = cleanUrl(extra.url);
+  if (url) note.url = url;
   fs.appendFileSync(path.join(dir, "notes.jsonl"), JSON.stringify(note) + "\n", "utf8");
   return note.text;
 }
@@ -135,4 +167,42 @@ export function score(query: string, text: string): number {
   let found = 0;
   for (const term of terms) if (lower.includes(term)) found++;
   return found;
+}
+
+/** A note's id for reinforcement and consolidation: stable across searches, changes only if the text does. */
+export function noteId(folder: string, text: string): string {
+  return `n:${createHash("sha1").update(realFolder(folder).toLowerCase() + "\u0000" + text).digest("hex").slice(0, 16)}`;
+}
+
+function tokenize(text: string): string[] {
+  return (text.toLowerCase().match(/[a-z0-9][a-z0-9_+#-]*/g) ?? []).filter((w) => w.length > 1 && !STOPWORDS.has(w));
+}
+
+/**
+ * Okapi BM25: how well each doc matches the query, ranking a rare shared word above a common one and
+ * a short doc that says it plainly above a long one that mentions it once in passing.
+ */
+export function bm25(query: string, docs: string[], k1 = 1.5, b = 0.75): number[] {
+  const queryTerms = [...new Set(tokenize(query))];
+  if (!queryTerms.length || !docs.length) return docs.map(() => 0);
+  const docTokens = docs.map(tokenize);
+  const lengths = docTokens.map((t) => t.length);
+  const avgLength = lengths.reduce((sum, len) => sum + len, 0) / docs.length || 1;
+  const docFreq = new Map<string, number>();
+  for (const term of queryTerms) docFreq.set(term, docTokens.filter((tokens) => tokens.includes(term)).length);
+  const n = docs.length;
+  return docTokens.map((tokens, i) => {
+    const counts = new Map<string, number>();
+    for (const t of tokens) counts.set(t, (counts.get(t) ?? 0) + 1);
+    let total = 0;
+    for (const term of queryTerms) {
+      const f = counts.get(term) ?? 0;
+      if (!f) continue;
+      const df = docFreq.get(term)!;
+      const idf = Math.log((n - df + 0.5) / (df + 0.5) + 1);
+      const denom = f + k1 * (1 - b + (b * lengths[i]) / avgLength);
+      total += idf * ((f * (k1 + 1)) / denom);
+    }
+    return total;
+  });
 }

@@ -9,17 +9,20 @@ import { ChildProcess, spawn } from "node:child_process";
 import { autoUpdater } from "electron-updater";
 
 import { Brain } from "../brain/brain";
+import { applyMerge, previewDuplicates, safeDrop } from "../brain/consolidate";
 import * as files from "../brain/files";
 import { KITS, allRoles, detectKit, isBuiltInRole, kitById, roleById, standingPrompt } from "../brain/kits";
 import { claudeCommand, configDirOf, ollamaModels, online, profileEnv, signedInAs } from "../brain/launch";
 import { exportProject, importProject, newSharedNotes, readShared } from "../brain/share";
-import { afterWakeWord, cleanupTranscript, matchProject, openProjectRequest, speakable, voiceCommand } from "../brain/speech";
-import { addNote, removeNote } from "../brain/store";
+import { afterWakeWord, audioNoise, cleanupTranscript, isThanks, matchProject, openProjectRequest, speakable, transcriptNoise, voiceCommand } from "../brain/speech";
+import { addNote, removeNote, tree } from "../brain/store";
 import { containerDir, earlierHomes, home } from "../brain/paths";
 import { moveData } from "../brain/relocate";
 import { removeSession, renameProfileSessions, sameFolder } from "../brain/sessions";
 import { bundleReady, renameProfileLabels } from "../brain/sorting";
+import { Member, Near, handoverMessage, handoverOffer, nearLimit } from "../brain/handover";
 import { planLimits } from "../brain/limits";
+import { moveTask, readTasks } from "../brain/tasks";
 import { tokenUsage } from "../brain/usage";
 import * as ws from "../brain/workspace";
 import { Control } from "./control";
@@ -120,7 +123,7 @@ function mcpConfigFile(profile?: ws.Profile): string {
 /** The link that lets one terminal's Claude Code list, read and message the others. */
 const control = new Control({
   terminals: () => workspace.profiles.map((p) => ({
-    name: p.name, kind: p.kind ?? "claude", running: terminals.has(p.id), role: p.role ? roleById(p.role, workspace.roles).name : undefined,
+    name: p.name, kind: p.kind ?? "claude", running: terminals.has(p.id), role: p.role ? roleById(p.role, workspace.roles).name : undefined, roleId: p.role || undefined,
   })),
   read: async (name, lines) => {
     const profile = workspace.profiles.find((p) => p.name === name);
@@ -346,12 +349,17 @@ async function transcribe(pcm: number[]): Promise<{ text?: string; error?: strin
     return { error: (error as Error).message };
   }
   if (!transcriber) return { error: "The speech model is not available." };
+  // Noise never reaches a terminal: a click, a quiet room or a fan is not sent to Whisper at all (it
+  // would write "Thank you." for it), and what Whisper writes for noise anyway is dropped. Checked after
+  // the model has started, so the page's silent warm-up still loads it.
+  if (audioNoise(pcm)) return { text: "" };
   const id = Math.random().toString(36).slice(2);
   const answer = await new Promise<{ text?: string; error?: string }>((resolve) => {
     transcribePending.set(id, resolve);
     transcriber!.stdin!.write(JSON.stringify({ id, pcm }) + "\n");
   });
-  if (answer.text) answer.text = cleanupTranscript(answer.text);
+  // Every transcript goes to Recon, where a plain "Thank you." ends the conversation (see isThanks).
+  if (answer.text) answer.text = transcriptNoise(answer.text) && !isThanks(answer.text) ? "" : cleanupTranscript(answer.text);
   return answer;
 }
 
@@ -623,7 +631,8 @@ ipcMain.handle("profile:remove", (_event, id: string) =>
     return workspace;
   }),
 );
-ipcMain.handle("brain:search", (_event, query: string) => brain.searchSmart(String(query), 20));
+// Searches run as the user types; only a finished one (Enter, or a result clicked) strengthens what it found.
+ipcMain.handle("brain:search", (_event, query: string, final?: boolean) => brain.searchSmart(String(query), 20, { reinforce: final === true }));
 ipcMain.handle("brain:unfinished", () => brain.unfinished(workspace.folder));
 // Claude tokens only: Ollama and Free models terminals also write usage, but those are not Claude's.
 // The renderer also gets each Claude profile's own week and session window, by profile id, for the bar under its terminal.
@@ -650,6 +659,62 @@ ipcMain.handle("usage:get", async () => {
     return { error: String((error as Error)?.message ?? error) };
   }
 });
+/**
+ * Every terminal as the budget hand-over sees it. `screenNear` is a terminal whose Claude Code itself
+ * said it is near its limit (the page reads that off the screen) when Anthropic's figures are not known.
+ */
+async function handoverTeam(screenNear = ""): Promise<Member[]> {
+  return Promise.all(workspace.profiles.map(async (p): Promise<Member> => {
+    const kind = p.kind ?? "claude";
+    let near: Near | null = null;
+    if (kind === "claude") {
+      near = nearLimit(await planLimits(configDirOf(p)).catch(() => null));
+      // Claude Code said so on screen; how far exactly is not known (0 stands for that).
+      if (!near && p.id === screenNear) near = { which: "session", percent: 0 };
+    }
+    return {
+      id: p.id, name: p.name, running: terminals.has(p.id), contained: ws.isContained(workspace, p), role: p.role, near,
+      // Terminals signed in to one Claude account share its limits, so they cannot take over from each other.
+      account: kind === "claude" ? path.resolve(configDirOf(p)).toLowerCase() : `kind:${kind}`,
+    };
+  }));
+}
+
+/** What a terminal near its limit could hand over, for the page to offer; read-only. */
+ipcMain.handle("handover:offer", async (_event, id: string, screenNear?: boolean) => {
+  const from = String(id ?? "");
+  const offer = handoverOffer(from, readTasks(workspace.folder), await handoverTeam(screenNear === true ? from : ""));
+  if (!offer) return null;
+  return {
+    from: offer.from.name, near: offer.from.near,
+    tasks: offer.tasks.map((t) => ({ id: t.id, title: t.title, status: t.status })),
+    to: offer.to.map((m) => ({ id: m.id, name: m.name, role: m.role ? roleById(m.role, workspace.roles).name : "" })),
+  };
+});
+
+/**
+ * The user clicked to hand a terminal's open tasks to another. Everything is checked again here, from
+ * the board and the terminals as they are now: the page only names what it was offered.
+ */
+ipcMain.handle("handover:confirm", async (_event, id: string, toId: string, screenNear?: boolean) => {
+  const fromId = String(id ?? "");
+  const offer = handoverOffer(fromId, readTasks(workspace.folder), await handoverTeam(screenNear === true ? fromId : ""));
+  if (!offer) return { error: "There is nothing to hand over any more: no open tasks, or nobody free to take them." };
+  const taker = offer.to.find((m) => m.id === String(toId ?? ""));
+  const profile = taker && workspace.profiles.find((p) => p.id === taker.id);
+  if (!taker || !profile) return { error: "That terminal cannot take over now: it stopped, shares the account, or is near a limit itself." };
+  let screen = "";
+  try {
+    if (win && !win.isDestroyed()) screen = String(await win.webContents.executeJavaScript(`terminalText(${JSON.stringify(fromId)}, 60)`));
+  } catch {
+    // the summary goes without the screen
+  }
+  const note = `Handed over from ${offer.from.name}, near its usage limit.`;
+  for (const task of offer.tasks) moveTask(workspace.folder, task.id, task.status, task.note ? `${note} Before: ${task.note}` : note, taker.name);
+  const how = sendToProfile(profile, `[Hand-over from the "${offer.from.name}" terminal, confirmed by the user] ${handoverMessage(offer.from, offer.tasks, screen)}`);
+  return { to: taker.name, tasks: offer.tasks.length, queued: how === "queued" };
+});
+
 ipcMain.handle("note:add", (_event, text: string) =>
   result(() => {
     if (!workspace.folder) throw new Error("Choose a project folder first.");
@@ -673,6 +738,32 @@ ipcMain.handle("session:remove", (_event, ref: { profile: string; id: string }) 
     return { removed };
   }),
 );
+// Read-only: nothing is removed until "note:consolidate:apply" names a specific group. Even so, the
+// folder is checked first, so the page cannot use this to read notes from an arbitrary folder.
+ipcMain.handle("note:consolidate:preview", async (_event, folder: string) => {
+  try {
+    const target = String(folder ?? "");
+    const known = !!target && (sameFolder(target, workspace.folder) || tree().some((p) => sameFolder(p.folder, target)));
+    if (!known) throw new Error("Unknown project.");
+    return { groups: await previewDuplicates(target) };
+  } catch (error) {
+    return { error: (error as Error).message };
+  }
+});
+ipcMain.handle("note:consolidate:apply", async (_event, folder: string, group: { keep?: { text?: unknown; time?: unknown }; drop?: unknown }) => {
+  try {
+    const target = String(folder ?? "");
+    const known = !!target && (sameFolder(target, workspace.folder) || tree().some((p) => sameFolder(p.folder, target)));
+    if (!known) throw new Error("Unknown project.");
+    // The page's idea of a group is never trusted on its own: safeDrop finds the groups again here,
+    // and only notes a fresh look still calls duplicates of the same kept note are ever removed.
+    const removed = applyMerge(target, { drop: safeDrop(await previewDuplicates(target), group) });
+    pushGraph(true);
+    return { removed };
+  } catch (error) {
+    return { error: (error as Error).message };
+  }
+});
 ipcMain.handle("share:info", () => {
   if (!workspace.folder) return { folder: "" };
   const shared = readShared(workspace.folder);
@@ -853,7 +944,8 @@ ipcMain.handle("mic:transcribe", (_event, pcm: number[]) =>
 ipcMain.handle("voice:wake", (_event, text: string) => {
   const heard = String(text ?? "");
   const after = afterWakeWord(heard);
-  return { matched: after !== null, after: after ?? "", command: voiceCommand(after ?? heard), open: openProjectRequest(after ?? heard) };
+  // A plain "thank you" ends a conversation without a spoken answer: it is a goodbye, not a request.
+  return { matched: after !== null, after: after ?? "", command: voiceCommand(after ?? heard), thanks: isThanks(after ?? heard), open: openProjectRequest(after ?? heard) };
 });
 
 /**
@@ -879,7 +971,7 @@ ipcMain.handle("voice:ask", (_event, anchorId: string, command: string) => {
   const others = workspace.profiles.filter((p) => p.id !== manager.id && terminals.has(p.id));
   const anchor = others.find((p) => p.id === String(anchorId)) ?? others[0];
   if (!anchor) return { error: `Start one more terminal besides ${manager.name}; the Manager answers by voice through it.` };
-  const text = cleanupTranscript(String(command ?? ""));
+  const text = transcriptNoise(String(command ?? "")) ? "" : cleanupTranscript(String(command ?? ""));
   if (!text) return { error: "Didn't catch that." };
   voiceReplies.expect(anchor.id, manager.name);
   const how = sendToProfile(manager,

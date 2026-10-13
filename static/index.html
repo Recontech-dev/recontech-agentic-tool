@@ -38,6 +38,16 @@
   .hright { display:flex; align-items:center; gap:8px; margin-left:auto; }
   /* In a narrower window the app name gives way first; the controls keep their labels. */
   @media (max-width:1180px) { header > strong { display:none; } }
+  /* Down to the 900px minimum the bar stays one row: tighter spacing, a shorter kit picker, no font size figure. */
+  @media (max-width:1000px) {
+    header { gap:6px; padding:6px 8px; }
+    .hright { gap:6px; }
+    header button { padding-left:8px; padding-right:8px; }
+    .hgroup.project #kit { max-width:110px; }
+    .hgroup.view #fontSize { display:none; }
+    .hgroup.view #fontSize + button { border-left:1px solid var(--line) !important; }
+    header .divider { display:none; }
+  }
   .menuwrap { position:relative; }
   button.more { font-size:16px; line-height:1; padding:4px 8px; border:1px solid transparent; }
   button.more[aria-expanded="true"] { border-color:var(--line); color:var(--text); }
@@ -91,13 +101,18 @@
     .bar .hint { display:none; }
     .bar button.icon { padding:2px 4px; }
   }
-  .term { flex:1; min-height:0; padding:4px 6px; }
+  /* The inner gap sits on .xterm, not here: xterm's fit counts its own padding but not its parent's, and a
+     parent's padding would let the last row run under the usage bar. */
+  .term { flex:1; min-height:0; padding:0; }
+  .term > .xterm { padding:4px 6px; height:100%; }
   .usagebar { display:flex; gap:10px; align-items:center; padding:2px 8px; font-size:11px; color:var(--dim); background:#0d1015;
               border-top:1px solid var(--line); white-space:nowrap; overflow:hidden; font-variant-numeric:tabular-nums; flex:none; }
   .usagebar[hidden] { display:none; }
   .usagebar > span { overflow:hidden; text-overflow:ellipsis; }
   .usagebar .limit { margin-left:auto; flex:none; max-width:55%; }
   .usagebar .week { flex:none; }
+  .usagebar .handover { flex:none; }
+  .usagebar .handover button { font-size:11px; padding:0 6px; line-height:16px; }
   .usagebar .browser { flex:none; color:#7cc4ff; }
   .usagebar .browser.clash { color:#e0b050; }
   .bar button.browser { opacity:.45; filter:grayscale(1); }
@@ -155,6 +170,8 @@
   #search { grid-column:1 / -1; min-width:0; }
   #filter { font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:5px 6px; min-width:0; }
   #sorting { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  #sorting .short { display:none; }
+  @container (max-width:300px) { #sorting .long { display:none; } #sorting .short { display:inline; } }
   @container (min-width:560px) {
     #brainbar { grid-template-columns:minmax(0, 1fr) auto auto; }
     #search { grid-column:auto; }
@@ -171,6 +188,9 @@
   #legend { display:flex; flex-wrap:wrap; gap:4px 12px; padding:6px 10px; font-size:12px; color:var(--dim); border-top:1px solid var(--line); }
   #legend span::before { content:""; display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; background:var(--c); }
   #legend span.ring::before { background:transparent; border:2px dashed var(--topic); width:6px; height:6px; }
+  #legend .modes { margin-left:auto; display:flex; gap:4px; }
+  #legend .modes::before { display:none; }
+  #legend .graphmode { font:inherit; font-size:11px; padding:0 6px; line-height:16px; }
   #detail { flex:0 1 110px; min-height:52px; overflow:auto; padding:8px 10px; background:var(--panel); border-top:1px solid var(--line); white-space:pre-wrap; overflow-wrap:anywhere; }
   /* In a short window the picture needs the height more than the text boxes around it do. */
   @media (max-height:720px) {

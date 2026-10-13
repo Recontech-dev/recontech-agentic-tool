@@ -17,6 +17,8 @@ export interface TerminalInfo {
   running: boolean;
   /** The terminal's job, if it was given one: Builder, Reviewer or Tester. */
   role?: string;
+  /** The same job by its id ("builder"), which stays the same when a role is renamed. */
+  roleId?: string;
 }
 
 export interface Hooks {

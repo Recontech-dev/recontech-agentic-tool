@@ -22,6 +22,89 @@ export function cleanupTranscript(raw: string): string {
 }
 
 /**
+ * What Whisper writes when it heard nothing worth writing: silence and room noise come out as the
+ * closing lines of the YouTube videos it learned from, or as a tag in brackets. Whole transcripts only,
+ * compared after punctuation and case are dropped, so "thank you, that's all" or "subscribe the
+ * builder to the task board" still get through. Short real answers the voice flow waits for ("yes",
+ * "okay", "bye", "stop") are deliberately not here.
+ */
+const HALLUCINATIONS = new Set([
+  "you", "thank you", "thank you very much", "thank you so much", "thanks", "thanks a lot",
+  "thank you for watching", "thanks for watching", "thank you for watching and see you next time",
+  "please subscribe", "subscribe", "like and subscribe", "please like and subscribe",
+  "dont forget to like and subscribe", "see you next time", "see you in the next video",
+  "i'll see you in the next video", "ill see you in the next video", "so", "oh", "ah", "uh", "um", "hmm", "mm", "huh",
+  "the end", "silence", "blank audio", "music", "applause", "laughter", "inaudible", "foreign",
+]);
+/** A tag in brackets, parentheses or asterisks: "[BLANK_AUDIO]", "(coughs)", "*sigh*", "[Music]". */
+const TAG = /[[(*][^\])*]{0,40}[\])*]/g;
+/** Credits Whisper copies from subtitle files, anywhere in the text. */
+const CREDITS = /\b(?:subtitles?|captions?|transcri(?:bed|ption))\s+(?:by|from)\b|amara\.org|\bwww\.|\.com\b/i;
+
+/**
+ * Why a raw transcript is noise rather than something the user said, or null when it is real speech:
+ * empty, only tags or music notes, a known Whisper hallucination, a subtitle credit, or one word said
+ * over and over ("you you you you", which Whisper writes for a hum or a fan).
+ */
+export function transcriptNoise(raw: string): string | null {
+  const text = String(raw ?? "").replace(TAG, " ").replace(/[♪♫♬🎵🎶]/gu, " ").trim();
+  if (!text) return "empty";
+  if (CREDITS.test(text)) return "subtitle credit";
+  const words = text.toLowerCase().replace(/[’']/g, "'").replace(/[^\p{L}\p{N}'\s]/gu, " ").split(/\s+/).filter(Boolean);
+  if (!words.length) return "no words";
+  const plain = words.join(" ");
+  if (HALLUCINATIONS.has(plain) || HALLUCINATIONS.has(plain.replace(/'/g, ""))) return "hallucination";
+  // Fillers alone ("um, uh, hmm") are nothing to send.
+  if (words.every((word) => /^(?:u+m+|u+h+|e+r+m*|h+m+|m+h*m*|a+h+|o+h+)$/.test(word))) return "filler";
+  // The same word four or more times and nothing else is a hum or a fan, not a command ("yes yes yes" stays).
+  if (words.length >= 4 && new Set(words).size === 1) return "repeated word";
+  // Long runs of one short phrase ("I'm sorry. I'm sorry. I'm sorry.") are Whisper looping on noise.
+  if (words.length >= 6 && new Set(words).size <= 2) return "repeated phrase";
+  return null;
+}
+
+/** "Thank you" or "thanks" said on its own: how people close a conversation, and also Whisper's favourite hallucination. */
+const THANKS = /^(?:thank\s+you|thanks)(?:\s+(?:very|so)\s+much|\s+a\s+lot)?(?:\s+recon)?$/i;
+
+/**
+ * Whether a transcript is a plain thank-you. transcriptNoise calls it a hallucination, which is right
+ * for text that would be typed into a terminal; in a voice conversation it is how the user says goodbye,
+ * so the transcriber lets it through and voiceCommand reads it as "sleep". Whisper writing it for a
+ * sound that was not speech then ends a conversation at worst, never sends anything.
+ */
+export function isThanks(raw: string): boolean {
+  return THANKS.test(String(raw ?? "").replace(/[^\w\s']/g, " ").replace(/\s+/g, " ").trim());
+}
+
+/** Recordings shorter than this are a click or a tap of the key, not a word. */
+export const MIN_SPEECH_MS = 300;
+/** A 20 ms frame this loud (RMS, samples from -1 to 1) has a voice in it; the page starts recording at 0.025. */
+export const SPEECH_RMS = 0.012;
+/** How much of a recording must be that loud: a short word is about a tenth of a second. */
+export const MIN_VOICED_MS = 120;
+
+/**
+ * Why a 16 kHz mono recording is not worth transcribing, or null when it may hold speech: too short,
+ * or never loud enough for long enough to be a voice (a quiet room, a fan, the mic picking up a click).
+ * Checked before Whisper runs, since Whisper writes something even for silence.
+ */
+export function audioNoise(pcm: ArrayLike<number>, rate = 16_000): string | null {
+  const length = pcm?.length ?? 0;
+  if ((length / rate) * 1000 < MIN_SPEECH_MS) return "too short";
+  const frame = Math.max(1, Math.round(rate / 50));
+  let voiced = 0;
+  for (let start = 0; start + frame <= length; start += frame) {
+    let sum = 0;
+    for (let i = start; i < start + frame; i++) {
+      const value = Number(pcm[i]) || 0;
+      sum += value * value;
+    }
+    if (Math.sqrt(sum / frame) >= SPEECH_RMS) voiced++;
+  }
+  return voiced * 20 < MIN_VOICED_MS ? "too quiet" : null;
+}
+
+/**
  * "Recon", as Whisper tiny.en tends to hear it: "recon", "reckon", "re-con", "rekon", "recom" or
  * "raccoon", and, said with a longer "ee" as British voices do, "reekon", "reacon", "reeken" or
  * "reakin'"; optionally after "hey" or "okay", and after "hey" also just "con". Only at the very start
@@ -63,7 +146,7 @@ export function voiceCommand(transcript: string): "off" | "sleep" | null {
   const text = String(transcript ?? "").replace(/[^\w\s',-]/g, " ").replace(/\s+/g, " ").trim();
   if (!text || text.split(" ").length > MAX_COMMAND_WORDS) return null;
   if (MIC_OFF.test(text)) return "off";
-  if (SLEEP.test(text)) return "sleep";
+  if (SLEEP.test(text) || isThanks(text)) return "sleep";
   return null;
 }
 
