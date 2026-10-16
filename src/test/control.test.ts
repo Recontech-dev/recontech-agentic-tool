@@ -57,7 +57,13 @@ test("terminals can be listed, read and messaged, with a limit on back-and-forth
   assert.equal(blocked.status, 429);
   assert.match(blocked.data.error, /let the user decide/);
   assert.equal((await call("/send", { from: "Work", to: "Account 1", message: "the other direction has its own count" })).status, 200);
-  assert.equal((await call("/send", { from: "Work", to: "Account 1", message: "x".repeat(2 * 1024 * 1024) })).status, 413, "an oversized request is refused, not read into memory");
+  // The server answers 413 and closes the connection while the body is still arriving. Under load the
+  // client can see that close (a reset) before it reads the answer; either way the request was refused.
+  const oversized = await call("/send", { from: "Work", to: "Account 1", message: "x".repeat(2 * 1024 * 1024) }).then(
+    (answer) => answer.status,
+    (error) => (["ECONNRESET", "EPIPE"].includes(error?.cause?.code) ? "reset" : Promise.reject(error)),
+  );
+  assert.ok(oversized === 413 || oversized === "reset", `an oversized request is refused, not read into memory (got ${oversized})`);
   control.close();
 });
 
