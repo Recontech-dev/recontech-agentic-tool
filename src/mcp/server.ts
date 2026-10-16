@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import * as readline from "node:readline";
 
 import { Brain } from "../brain/brain";
+import { DEVICES } from "../brain/devices";
 import { addNote, cleanUrl, removeNote } from "../brain/store";
 import { STATUSES, Task, TaskStatus, Teammate, addTask, boardSummary, checkerFor, handOffMessage, moveTask, readTasks, whyNotMove } from "../brain/tasks";
 import { sources } from "../brain/workspace";
@@ -42,7 +43,9 @@ const INSTRUCTIONS =
   "RESEARCH: for any non-trivial task, work in this order. First recall (and project_memory) to see what this and other projects " +
   "already learned about it; second, search the web for how it is done well (official docs, well-regarded sources); then implement. " +
   "Save what was learned with remember, kind \"research\", with the source URL in source, so the next project finds it. " +
-  "Skip the web for trivial edits." +
+  "Skip the web for trivial edits. " +
+  "DEVICE PREVIEWS: after changing how a web page looks, use preview_device to see it on a phone or tablet (its dev server must " +
+  "be running on this computer), fix what looks wrong, and check again before calling the work done." +
   (SELF ? ` This terminal is called "${SELF}".` : "");
 
 const projectArg = { type: "string", description: "Project folder. Leave out to use the current folder." };
@@ -125,6 +128,19 @@ const TOOLS = [
     },
   },
   {
+    name: "preview_device",
+    description: "See the web page being built as a phone, tablet or desktop shows it. Opens it in a device preview window in the app (screen size, pixel density, touch and mobile browser of that device) and returns a screenshot, the page title and any errors the page logged while loading. Only addresses on this computer or the local network (localhost, 127.0.0.1, 192.168.x.x): start the dev server first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The page, for example http://localhost:5173/login" },
+        device: { type: "string", enum: DEVICES.map((d) => d.id), description: `Which device (default iphone-15): ${DEVICES.map((d) => `${d.id} ${d.width}x${d.height}`).join(", ")}` },
+        landscape: { type: "boolean", description: "Turn a phone or tablet sideways" },
+      },
+      required: ["url"], additionalProperties: false,
+    },
+  },
+  {
     name: "task_board",
     description: "The project's task board: every task, who has it and how far it got.",
     inputSchema: { type: "object", properties: { project: projectArg }, additionalProperties: false },
@@ -137,7 +153,7 @@ const taskLine = (t: Task) => `- ${t.id} [${t.status}] "${t.title}", ${t.to} (fr
 const brain = new Brain(() => sources());
 
 /** Ask the app's terminal link. The app writes its address to a file when it starts. */
-async function control(route: string, body: object): Promise<any> {
+async function control(route: string, body: object, timeoutMs = 15_000): Promise<any> {
   let address: { url: string; token: string };
   try {
     address = JSON.parse(fs.readFileSync(CONTROL_FILE, "utf8"));
@@ -150,7 +166,7 @@ async function control(route: string, body: object): Promise<any> {
       method: "POST",
       headers: { "content-type": "application/json", "x-alt-token": address.token },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     throw new Error("The Recontech Agentic Tool app is not answering. Is its window still open?");
@@ -160,7 +176,10 @@ async function control(route: string, body: object): Promise<any> {
   return data;
 }
 
-async function runTool(name: string, args: any): Promise<string> {
+/** What a tool gives back: text, or text and pictures as MCP content. */
+type ToolContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
+async function runTool(name: string, args: any): Promise<string | ToolContent[]> {
   if (CONTAINED && !CONTAINED_TOOLS.has(name)) throw new Error("Not available: this terminal is kept in a container.");
   const folder = typeof args?.project === "string" && args.project ? args.project : process.cwd();
   switch (name) {
@@ -259,6 +278,14 @@ async function runTool(name: string, args: any): Promise<string> {
       const moved = moveTask(folder, id, status, note);
       return `Task ${moved.id} is now ${moved.status}.`;
     }
+    case "preview_device": {
+      // A page can take a while: the app waits up to 30 seconds for it to load, then a moment for it to settle.
+      const shot = await control("/preview", { from: SELF, url: args?.url, device: args?.device, landscape: args?.landscape === true }, 60_000);
+      const lines = [`${shot.device}: ${shot.url}`, `Title: ${shot.title || "(none)"}`];
+      lines.push(shot.errors?.length ? `Errors the page logged:\n${shot.errors.map((e: string) => `- ${e}`).join("\n")}` : "The page logged no errors.");
+      lines.push("The preview window stays open in the app for the user to look at too.");
+      return [{ type: "text", text: lines.join("\n") }, { type: "image", data: shot.image, mimeType: "image/png" }];
+    }
     case "task_board": {
       const tasks = readTasks(folder);
       return [boardSummary(tasks), ...tasks.map(taskLine)].join("\n");
@@ -286,7 +313,8 @@ async function handle(message: any): Promise<object | null> {
       return reply({ tools: CONTAINED ? TOOLS.filter((t) => CONTAINED_TOOLS.has(t.name)) : TOOLS });
     case "tools/call":
       try {
-        return reply({ content: [{ type: "text", text: await runTool(params?.name, params?.arguments) }] });
+        const result = await runTool(params?.name, params?.arguments);
+        return reply({ content: typeof result === "string" ? [{ type: "text", text: result }] : result });
       } catch (error) {
         return reply({ content: [{ type: "text", text: String((error as Error).message ?? error) }], isError: true });
       }

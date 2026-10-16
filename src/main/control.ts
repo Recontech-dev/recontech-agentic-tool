@@ -8,6 +8,8 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 
+import { DEVICES, deviceById, isLocalAddress, previewAddress } from "../brain/devices";
+
 /** The largest request body read, so a stuck or hostile client cannot fill the memory. */
 const MAX_BODY = 1024 * 1024;
 
@@ -32,7 +34,24 @@ export interface Hooks {
   deliver(name: string, text: string, from?: string): "sent" | "queued" | void;
   /** True for a terminal kept in a container, which may not read the other terminals' screens. */
   contained?(name: string): boolean;
+  /** Opens a device preview of a checked local address and takes a screenshot of it once it has loaded. */
+  preview?(request: PreviewRequest): Promise<PreviewShot | { error: string }>;
 }
+
+export interface PreviewRequest { address: string; device: string; landscape: boolean; from: string }
+export interface PreviewShot {
+  /** The screenshot, a PNG in base64. */
+  image: string;
+  title: string;
+  url: string;
+  /** The device as a person reads it, size and orientation included. */
+  device: string;
+  /** What the page logged as errors while it loaded. */
+  errors: string[];
+}
+
+/** The device a preview uses when none is named: a common phone. */
+export const DEFAULT_PREVIEW_DEVICE = "iphone-15";
 
 /** How many messages one terminal may send another in a window of time, so two sessions cannot loop forever. */
 export const MAX_MESSAGES = 12;
@@ -43,6 +62,8 @@ export class Control {
   port = 0;
   private server: http.Server | null = null;
   private sent = new Map<string, number[]>();
+  /** Terminals with a preview being taken: one at a time each, so a session cannot pile windows up. */
+  private previewing = new Set<string>();
 
   constructor(private hooks: Hooks) {}
 
@@ -139,6 +160,28 @@ export class Control {
       this.sent.set(key, [...recent, Date.now()]);
       const how = this.hooks.deliver(target.name, `[Message from the "${from}" terminal] ${message.slice(0, 6000)}`, from);
       return this.reply(res, 200, { delivered: target.name, queued: how === "queued", remaining: MAX_MESSAGES - recent.length - 1 });
+    }
+
+    if (req.url === "/preview") {
+      const from = String(body.from ?? "").trim();
+      if (!this.hooks.preview) return this.reply(res, 501, { error: "Device previews are not available here." });
+      if (this.hooks.contained?.(from)) return this.reply(res, 403, { error: "This terminal is kept in a container and cannot open device previews." });
+      const address = previewAddress(body.url);
+      if (!address) return this.reply(res, 400, { error: "url must be a web address, for example http://localhost:3000" });
+      if (!isLocalAddress(address)) {
+        return this.reply(res, 403, { error: "Only addresses on this computer or the local network can be previewed (localhost, 127.0.0.1, 192.168.x.x and so on): start the dev server and preview it there." });
+      }
+      const device = deviceById(body.device ?? DEFAULT_PREVIEW_DEVICE);
+      if (!device) return this.reply(res, 400, { error: `There is no device "${body.device}". Devices: ${DEVICES.map((d) => d.id).join(", ")}` });
+      const key = from.toLowerCase();
+      if (this.previewing.has(key)) return this.reply(res, 429, { error: "A preview for this terminal is still being taken. Wait for it to finish." });
+      this.previewing.add(key);
+      try {
+        const shot = await this.hooks.preview({ address, device: device.id, landscape: body.landscape === true, from });
+        return this.reply(res, "error" in shot ? 502 : 200, shot);
+      } finally {
+        this.previewing.delete(key);
+      }
     }
     this.reply(res, 404, { error: "unknown" });
   }

@@ -13,10 +13,12 @@ interface Match { kind: string; project: string; folder: string; text: string; w
 
 declare const Terminal: any;
 declare const FitAddon: any;
+declare const SearchAddon: any;
 declare const api: {
   invoke(channel: string, ...args: unknown[]): Promise<any>;
   send(channel: string, ...args: unknown[]): void;
   on(channel: string, listener: (...args: any[]) => void): void;
+  system: { platform: string; version: string };
 };
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -763,6 +765,11 @@ function makePanel(profile: Profile): void {
     if (running(profile.id) && !confirm(`Restart ${now().name}'s terminal? What is running there now is closed.`)) return;
     start(profile.id);
   };
+  const find = document.createElement("button");
+  find.className = "icon";
+  find.title = "Search this terminal's history (Ctrl+Shift+F)";
+  find.textContent = "🔍";
+  find.onclick = () => searches.get(profile.id)?.open();
   const remove = document.createElement("button");
   remove.className = "icon remove";
   remove.title = "Remove this profile from the workspace";
@@ -829,7 +836,7 @@ Its terminal restarts; what is running there now is closed.` : what)) return;
   waiting.className = "waiting";
   waiting.hidden = true;
   waiting.onclick = () => api.invoke("term:deliver-now", profile.id);
-  bar.append(dot, name, hint, eye, spacer, waiting, browser, role, restart, remove);
+  bar.append(dot, name, hint, eye, spacer, waiting, browser, role, find, restart, remove);
   draggableTerminal(bar, profile.id);
   const body = document.createElement("div");
   body.className = "term";
@@ -844,13 +851,30 @@ Its terminal restarts; what is running there now is closed.` : what)) return;
   $("panels").append(panel);
 
   const term = new Terminal({ cursorBlink: true, fontFamily: "Consolas, 'Cascadia Mono', Menlo, monospace", fontSize: workspace.fontSize ?? 13,
-    theme: { background: "#000000" }, scrollback: 5000 });
+    theme: { background: "#000000" }, scrollback: SCROLLBACK_LINES, windowsPty: windowsPty(),
+    // The search highlights are decorations, which xterm still counts as a proposed API.
+    allowProposedApi: true });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(body);
   // Ctrl+Alt+1..6, Ctrl+Alt+B, Ctrl+Alt+F and Ctrl+Alt+0 (text size back to normal) belong to the app
-  // (switch terminal, show or hide the brain or the files), not to the terminal.
-  term.attachCustomKeyEventHandler((event: KeyboardEvent) => !(appShortcut(event) && /^[0-6bef]$/i.test(event.key)));
+  // (switch terminal, show or hide the brain or the files), not to the terminal. Ctrl+Shift+Home and
+  // Ctrl+Shift+End scroll the history to its start and end; Shift+PageUp/PageDown page through it;
+  // Ctrl+Shift+F searches it.
+  term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+    if (event.type === "keydown" && event.ctrlKey && event.shiftKey && !event.altKey && event.code === "KeyF") {
+      searches.get(profile.id)?.open();
+      return false;
+    }
+    if (event.type === "keydown" && event.ctrlKey && event.shiftKey && !event.altKey && (event.key === "Home" || event.key === "End")) {
+      if (event.key === "Home") term.scrollToTop();
+      else term.scrollToBottom();
+      return false;
+    }
+    return !(appShortcut(event) && /^[0-6bef]$/i.test(event.key));
+  });
+  addScrollHelp(term, body);
+  addSearch(profile.id, term, body);
   term.onData((data: string) => api.send("term:input", profile.id, data));
   term.onResize(({ cols, rows }: { cols: number; rows: number }) => api.send("term:resize", profile.id, cols, rows));
   // A click on the bar's own controls (the role list above all) must keep focus there: moving it to
@@ -874,6 +898,155 @@ Its terminal restarts; what is running there now is closed.` : what)) return;
     cover.append(title, text, go);
     body.append(cover);
   }
+}
+
+/* ---------- Terminal history: scroll back through everything a terminal printed ---------- */
+
+/** Lines of history each terminal keeps. Each line costs a few kilobytes, so this stays bounded. */
+const SCROLLBACK_LINES = 20000;
+/**
+ * On Windows the shell runs behind ConPTY, which repaints the screen instead of letting lines scroll
+ * into the history; telling xterm so turns on its workarounds, and without them history goes missing
+ * after a resize.
+ */
+function windowsPty(): { backend: "conpty"; buildNumber: number } | undefined {
+  if (api.system?.platform !== "win32") return undefined;
+  const build = Number(String(api.system.version).split(".")[2]);
+  return { backend: "conpty", buildNumber: Number.isFinite(build) ? build : 0 };
+}
+/*
+ * Claude Code clears the terminal's history (ESC [3J) whenever it redraws everything, after a resize
+ * for example, which threw away the whole conversation. That one sequence is dropped, so the history
+ * stays; the screen itself is still cleared and redrawn. A sequence can arrive split across two chunks,
+ * so a chunk ending in the start of one holds that tail back for the next chunk.
+ */
+const ERASE_HISTORY = "\x1b[3J";
+const heldBack = new Map<string, string>();
+function keepHistory(id: string, data: string): string {
+  let text = (heldBack.get(id) ?? "") + data;
+  heldBack.delete(id);
+  text = text.split(ERASE_HISTORY).join("");
+  for (let n = ERASE_HISTORY.length - 1; n > 0; n--) {
+    if (text.endsWith(ERASE_HISTORY.slice(0, n))) {
+      heldBack.set(id, text.slice(-n));
+      return text.slice(0, -n);
+    }
+  }
+  return text;
+}
+/** A "Latest" button in the corner of a terminal scrolled up into its history, to jump back down. */
+function addScrollHelp(term: any, body: HTMLElement): void {
+  const jump = document.createElement("button");
+  jump.className = "to-latest";
+  jump.textContent = "↓ Latest";
+  jump.title = "Back to the latest output (Ctrl+Shift+End). Scroll, Shift+PageUp or Ctrl+Shift+Home to read the history.";
+  jump.hidden = true;
+  jump.onclick = () => {
+    term.scrollToBottom();
+    term.focus();
+  };
+  body.append(jump);
+  let queued = 0;
+  const update = () => {
+    if (queued) return;
+    queued = requestAnimationFrame(() => {
+      queued = 0;
+      const buffer = term.buffer.active;
+      jump.hidden = buffer.viewportY >= buffer.baseY;
+    });
+  };
+  term.onScroll(update);
+  term.onWriteParsed(update);
+  body.querySelector(".xterm-viewport")?.addEventListener("scroll", update, { passive: true });
+}
+
+/* ---------- Search a terminal's history: Ctrl+Shift+F, or 🔍 on its bar ---------- */
+
+const SEARCH_LOOK = { matchBackground: "#5a4712", activeMatchBackground: "#d29922", matchOverviewRuler: "#d29922", activeMatchColorOverviewRuler: "#ffd866" };
+/** The search addon stops counting here, and reports no position past it. */
+const SEARCH_COUNT_LIMIT = 1000;
+const searches = new Map<string, { open(): void }>();
+
+/** A find bar in the corner of terminal `id`: Enter and Shift+Enter step through the matches, Esc closes it. */
+function addSearch(id: string, term: any, body: HTMLElement): void {
+  const addon = new SearchAddon.SearchAddon();
+  term.loadAddon(addon);
+  const box = document.createElement("div");
+  box.className = "term-search";
+  box.hidden = true;
+  const input = document.createElement("input");
+  input.placeholder = "Search the history";
+  input.spellcheck = false;
+  input.setAttribute("aria-label", "Search this terminal's history");
+  const count = document.createElement("span");
+  count.className = "count";
+  count.setAttribute("aria-live", "polite");
+  const button = (text: string, title: string) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.title = title;
+    return b;
+  };
+  const caseButton = button("Aa", "Match case");
+  caseButton.setAttribute("aria-pressed", "false");
+  const previous = button("↑", "Previous match (Shift+Enter)");
+  const next = button("↓", "Next match (Enter)");
+  const close = button("✕", "Close (Esc)");
+  box.append(input, count, caseButton, previous, next, close);
+  body.append(box);
+
+  let matchCase = false;
+  const find = (forward: boolean, incremental = false) => {
+    const text = input.value;
+    if (!text) {
+      addon.clearDecorations();
+      count.textContent = "";
+      return;
+    }
+    const options = { caseSensitive: matchCase, incremental, decorations: SEARCH_LOOK };
+    const found = forward ? addon.findNext(text, options) : addon.findPrevious(text, options);
+    if (!found) count.textContent = "No matches";
+  };
+  addon.onDidChangeResults(({ resultIndex, resultCount }: { resultIndex: number; resultCount: number }) => {
+    if (box.hidden || !input.value) return;
+    const total = resultCount >= SEARCH_COUNT_LIMIT ? `${SEARCH_COUNT_LIMIT}+` : String(resultCount);
+    count.textContent = !resultCount ? "No matches" : resultIndex < 0 ? `${total} matches` : `${resultIndex + 1} of ${total}`;
+  });
+  const hide = () => {
+    box.hidden = true;
+    addon.clearDecorations();
+    term.clearSelection();
+    term.focus();
+  };
+  input.addEventListener("input", () => find(true, true));
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") find(!event.shiftKey);
+    else if (event.key === "Escape") hide();
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  caseButton.onclick = () => {
+    matchCase = !matchCase;
+    caseButton.setAttribute("aria-pressed", String(matchCase));
+    find(true, true);
+    input.focus();
+  };
+  previous.onclick = () => find(false);
+  next.onclick = () => find(true);
+  close.onclick = hide;
+  searches.set(id, {
+    open: () => {
+      // Text selected on one line is what the user most likely wants to find.
+      const selected = term.hasSelection() ? String(term.getSelection()) : "";
+      if (selected && !selected.includes("\n") && selected.length <= 200) input.value = selected;
+      box.hidden = false;
+      input.focus();
+      input.select();
+      if (input.value) find(true, true);
+    },
+  });
 }
 
 /** Swaps a terminal's name for an inline input. Enter saves (validated like adding a profile), Esc cancels. */
@@ -972,23 +1145,37 @@ function saveSplit(): void {
 }
 
 /*
- * Tabs by choice, or because the window is too narrow: when a grid would give each terminal less than
- * about 50 columns by 12 rows, the terminals show as tabs instead, and go back to the grid once there is
- * room again. The user's own choice (workspace.layout) is never changed by this. A margin between the
- * two thresholds keeps a window right at the edge from flipping back and forth.
+ * Tabs by choice, or because the window is too narrow: when a grid would give a terminal less than
+ * about 40 columns by 8 rows, the terminals show as tabs instead, and go back to the grid once there is
+ * room again. The user's own choice (workspace.layout) is never changed by this, and clicking Grid while
+ * the window is narrow shows the grid anyway (gridAnyway) until they pick tabs again. A margin between
+ * the two thresholds keeps a window right at the edge from flipping back and forth.
  */
-const MIN_CELL_W = 420, MIN_CELL_H = 230, NARROW_MARGIN = 1.08;
+const MIN_CELL_W = 320, MIN_CELL_H = 170, NARROW_MARGIN = 1.08;
 let narrow = false;
-const tabbed = () => workspace.layout === "tabs" || narrow;
-/** Whether the terminal area is too small for every terminal in a grid cell of its own. */
+let gridAnyway = false;
+const tabbed = () => workspace.layout === "tabs" || (narrow && !gridAnyway);
+/** The smallest share of the width and of the height any terminal gets in the split tree. */
+function smallestPane(node: SplitNode | null, w = 1, h = 1): { w: number; h: number } {
+  if (!node) return { w, h };
+  if (isSplitLeaf(node)) return { w, h };
+  let least = { w: Infinity, h: Infinity };
+  node.children.forEach((child, i) => {
+    const part = node.dir === "row" ? smallestPane(child, w * node.sizes[i], h) : smallestPane(child, w, h * node.sizes[i]);
+    least = { w: Math.min(least.w, part.w), h: Math.min(least.h, part.h) };
+  });
+  return least;
+}
+/** Whether the terminal area is too small for every terminal in a pane of its own. */
 function tooNarrowForGrid(): boolean {
-  const n = workspace?.profiles.length ?? 0;
+  const ids = workspace?.profiles.map((p) => p.id) ?? [];
   const work = $("work").getBoundingClientRect();
-  if (n < 2 || !work.width || !work.height) return false;
-  const cols = n <= 3 ? n : Math.ceil(n / 2), rows = Math.ceil(n / cols);
+  if (ids.length < 2 || !work.width || !work.height) return false;
+  // The panes as they would be laid out: the saved split tree, not an assumed even grid.
+  const least = smallestPane(splitReconcile(splitTree ?? workspace.split, ids));
   // The top of the work area also holds the file editor when it is open; only what the panels get counts.
   const room = $("panels").getBoundingClientRect();
-  const width = work.width / cols, height = (room.height || work.height) / rows;
+  const width = work.width * least.w, height = (room.height || work.height) * least.h;
   const margin = narrow ? NARROW_MARGIN : 1;
   return width < MIN_CELL_W * margin || height < MIN_CELL_H * margin;
 }
@@ -998,9 +1185,9 @@ function applyLayout(): void {
   $("work").classList.toggle("tabs", tabs);
   const layoutButton = $("layout") as HTMLButtonElement;
   layoutButton.textContent = tabs ? "Grid" : "Tabs";
-  layoutButton.disabled = narrow && workspace.layout !== "tabs";
-  layoutButton.title = layoutButton.disabled
-    ? "The window is too narrow for a grid of terminals, so they show as tabs. Widen the window or hide the brain for the grid."
+  const forced = narrow && workspace.layout !== "tabs" && !gridAnyway;
+  layoutButton.title = forced
+    ? "The window is too narrow for a comfortable grid, so the terminals show as tabs. Click to show the grid anyway, or widen the window or hide the brain."
     : tabs ? "Show every terminal at once" : "Show one terminal at a time, as tabs";
 }
 /** Checks the room again after the window or a panel changed size; switches only when it must. */
@@ -1171,10 +1358,9 @@ function draggableTerminal(handle: HTMLElement, id: string): void {
 }
 
 async function dropTerminal(id: string, target: string, zone: DropZone): Promise<void> {
-  if (workspace.layout === "tabs") {
-    workspace = await api.invoke("workspace:layout", "grid");
-    applyLayout();
-  }
+  gridAnyway = true;
+  if (workspace.layout === "tabs") workspace = await api.invoke("workspace:layout", "grid");
+  applyLayout();
   const ids = workspace.profiles.map((p) => p.id);
   splitTree = splitDrop(splitReconcile(splitTree ?? workspace.split, ids), id, target, zone);
   saveSplit();
@@ -1208,6 +1394,8 @@ function render(): void {
     exited.delete(id);
     revealedEmails.delete(id);
     recentText.delete(id);
+    heldBack.delete(id);
+    searches.delete(id);
     limitShownAt.delete(id);
     limitStates.delete(id);
   }
@@ -1290,7 +1478,7 @@ $("foundDismiss").onclick = async () => {
 };
 
 api.on("term:data", (id: string, data: string) => {
-  terms.get(id)?.term.write(data);
+  terms.get(id)?.term.write(keepHistory(id, data));
   watchForLimit(id, data);
 });
 
@@ -1549,7 +1737,10 @@ async function switchFolder(folder: string, confirmed = false): Promise<void> {
   offerSharedNotes();
 }
 $("layout").onclick = async () => {
-  workspace = await api.invoke("workspace:layout", workspace.layout === "tabs" ? "grid" : "tabs");
+  // Whatever shows as tabs now (by choice or because the window is narrow), the button asks for the grid.
+  const toGrid = tabbed();
+  gridAnyway = toGrid;
+  if ((workspace.layout === "grid") !== toGrid) workspace = await api.invoke("workspace:layout", toGrid ? "grid" : "tabs");
   applyLayout();
   layoutPanels();
   select(active);
@@ -1700,7 +1891,7 @@ window.addEventListener("keydown", (event) => {
 
 /* ---------- Dialogs: Esc or a click outside closes them ---------- */
 
-const DIALOGS = ["dialog", "freeDialog", "shareDialog", "roleDialog"];
+const DIALOGS = ["dialog", "freeDialog", "shareDialog", "roleDialog", "deviceDialog"];
 for (const id of DIALOGS) {
   $(id).addEventListener("mousedown", (event) => {
     if (event.target === $(id)) $(id).hidden = true;
@@ -2292,6 +2483,67 @@ async function offerSharedNotes(): Promise<void> {
   $("shared").hidden = !newNotes;
   $("sharedText").textContent = `This project comes with ${newNotes} shared note${newNotes === 1 ? "" : "s"} from teammates that your brain does not have yet.`;
 }
+/* ---------- Device previews: the page being built, as a phone, a tablet or a desktop shows it ---------- */
+
+interface DeviceInfo { id: string; name: string; width: number; height: number; mobile: boolean }
+// The last address and devices, so the next preview is one click. Only a convenience: it may be unavailable.
+const DEVICE_PREFS_KEY = "devicePreview";
+function devicePrefs(): { url: string; ids: string[]; landscape: boolean } {
+  try {
+    const saved = JSON.parse(localStorage.getItem(DEVICE_PREFS_KEY) ?? "{}");
+    return { url: String(saved.url ?? ""), ids: Array.isArray(saved.ids) ? saved.ids.map(String) : [], landscape: saved.landscape === true };
+  } catch {
+    return { url: "", ids: [], landscape: false };
+  }
+}
+let deviceList: DeviceInfo[] = [];
+const deviceBoxes = () => [...document.querySelectorAll<HTMLInputElement>("#deviceList input")];
+function tickDevices(wanted: (device: DeviceInfo) => boolean): void {
+  for (const box of deviceBoxes()) box.checked = wanted(deviceList.find((d) => d.id === box.value)!);
+}
+
+$("devices").onclick = async () => {
+  if (!deviceList.length) deviceList = await api.invoke("device:list");
+  const prefs = devicePrefs();
+  ($("deviceUrl") as HTMLInputElement).value = prefs.url || "localhost:3000";
+  ($("deviceLandscape") as HTMLInputElement).checked = prefs.landscape;
+  const chosen = new Set(prefs.ids.length ? prefs.ids : ["iphone-15", "pixel-8", "ipad-mini"]);
+  $("deviceList").replaceChildren(...deviceList.map((device) => {
+    const label = document.createElement("label");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = device.id;
+    box.checked = chosen.has(device.id);
+    const size = document.createElement("span");
+    size.className = "size";
+    size.textContent = `${device.width}×${device.height}`;
+    label.append(box, ` ${device.name} `, size);
+    return label;
+  }));
+  $("deviceError").textContent = "";
+  $("deviceDialog").hidden = false;
+  ($("deviceUrl") as HTMLInputElement).select();
+};
+$("devicePhones").onclick = () => tickDevices((d) => d.mobile && d.width < 600);
+$("deviceTablets").onclick = () => tickDevices((d) => d.mobile && d.width >= 600);
+$("deviceNone").onclick = () => tickDevices(() => false);
+$("deviceCancel").onclick = () => ($("deviceDialog").hidden = true);
+$("deviceForm").onsubmit = async (event) => {
+  event.preventDefault();
+  const url = ($("deviceUrl") as HTMLInputElement).value.trim();
+  const ids = deviceBoxes().filter((box) => box.checked).map((box) => box.value);
+  const landscape = ($("deviceLandscape") as HTMLInputElement).checked;
+  const answer = await api.invoke("device:open", url, ids, landscape);
+  if (answer.error) return void ($("deviceError").textContent = answer.error);
+  try {
+    localStorage.setItem(DEVICE_PREFS_KEY, JSON.stringify({ url, ids, landscape }));
+  } catch {
+    // Not remembered this time; the previews still open.
+  }
+  $("deviceDialog").hidden = true;
+  toast(`Opened ${answer.opened} device preview${answer.opened === 1 ? "" : "s"} of ${answer.address}`);
+};
+
 $("share").onclick = async () => {
   await showShareInfo();
   $("shareDialog").hidden = false;

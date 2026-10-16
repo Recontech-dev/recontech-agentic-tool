@@ -8,6 +8,7 @@ const INVOKE = [
   "brain:unfinished", "note:add", "note:remove", "session:remove", "share:info", "share:export", "share:import", "kit:get", "kit:set", "profile:role", "role:list", "role:save", "role:remove",
   "ui:save", "update:install", "mic:transcribe", "term:deliver-now", "files:list", "files:open", "files:reveal", "files:read", "files:changed-at", "files:write", "files:committed", "files:vscode", "profile:rename",
   "voice:wake", "voice:ask", "voice:find-project", "usage:get", "term:paste", "profile:browser", "handover:offer", "handover:confirm", "note:consolidate:preview", "note:consolidate:apply",
+  "device:list", "device:open",
 ];
 const SEND = ["term:start", "term:input", "term:resize", "voice:listening"];
 const LISTEN = ["term:data", "term:exit", "term:message", "brain:graph", "net:status", "sorting:status", "free:status", "mic:status", "term:waiting", "voice:reply", "update:status"];
@@ -21,4 +22,6 @@ contextBridge.exposeInMainWorld("api", {
   on: (channel: string, listener: (...args: unknown[]) => void) => {
     if (LISTEN.includes(channel)) ipcRenderer.on(channel, (_event, ...args) => listener(...args));
   },
+  // Which system the terminals run on: on Windows they sit behind ConPTY, which xterm has to know.
+  system: { platform: process.platform, version: process.getSystemVersion() },
 });

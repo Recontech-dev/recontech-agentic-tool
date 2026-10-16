@@ -252,12 +252,14 @@ test("renaming a profile named \"A\" never steals sessions from a profile named 
   assert.ok(!("Alpha:b:s2" in labels), "A:b's label must not be relabelled Alpha:b");
 });
 
-test("the MCP server answers like Claude Code expects and shares the brain", async () => {
+test("the MCP server answers like Claude Code expects and shares the brain", async (t) => {
   const project = path.join(root, "shop");
   fs.mkdirSync(project);
   const server = spawn(process.execPath, [path.join(__dirname, "..", "mcp", "server.js")], {
     cwd: project, env: { ...process.env, ALT_HOME: process.env.ALT_HOME },
   });
+  // Also when an assertion fails: a server left running keeps the whole test run from ending.
+  t.after(() => server.kill());
   const replies: any[] = [];
   let buffer = "";
   server.stdout.on("data", (chunk) => {
@@ -278,7 +280,7 @@ test("the MCP server answers like Claude Code expects and shares the brain", asy
   assert.match(init.result.instructions, /long-term memory/);
   send({ jsonrpc: "2.0", method: "notifications/initialized" });
   send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
-  assert.deepEqual((await waitFor(2)).result.tools.map((t: any) => t.name), ["remember", "recall", "project_memory", "forget", "list_terminals", "read_terminal", "message_terminal", "hand_task", "update_task", "task_board"]);
+  assert.deepEqual((await waitFor(2)).result.tools.map((t: any) => t.name), ["remember", "recall", "project_memory", "forget", "list_terminals", "read_terminal", "message_terminal", "hand_task", "update_task", "preview_device", "task_board"]);
   send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "remember", arguments: { note: "Payments use Stripe test mode" } } });
   assert.match((await waitFor(3)).result.content[0].text, /Remembered/);
   send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "recall", arguments: { query: "stripe" } } });

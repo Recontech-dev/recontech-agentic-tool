@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 
 import { ROLES, roleById, standingPrompt } from "../brain/kits";
-import { Control, MAX_MESSAGES } from "../main/control";
+import { Control, DEFAULT_PREVIEW_DEVICE, MAX_MESSAGES, PreviewRequest } from "../main/control";
 
 function setup() {
   const delivered: [string, string][] = [];
@@ -201,4 +201,90 @@ test("a contained terminal gets no memory and no way to read others", async (t) 
     assert.equal(refused.isError, true, `${name} is refused`);
   }
   assert.equal(fs.existsSync(path.join(dir, "home", "memory")), false, "nothing was written to memory");
+});
+
+test("Claude Code can preview a local page on a device and gets the screenshot back", async (t) => {
+  const asked: PreviewRequest[] = [];
+  let release = () => {};
+  const control = new Control({
+    terminals: () => [{ name: "Coder", kind: "claude", running: true }, { name: "Free models", kind: "free", running: true }],
+    read: async () => "",
+    deliver: () => "sent",
+    contained: (name) => name === "Free models",
+    preview: async (request) => {
+      asked.push(request);
+      if (request.address.includes("slow")) await new Promise<void>((resolve) => (release = resolve));
+      if (request.address.includes("down")) return { error: "Could not open http://localhost:9/down: connection refused. Is the dev server running?" };
+      return { image: "iVBORw0KGgo=", title: "Login", url: request.address, device: "iPhone 15 Pro (393×852, portrait)", errors: ["Uncaught TypeError: x is undefined"] };
+    },
+  });
+  await control.listen();
+  t.after(() => control.close());
+  const call = async (body: object) => {
+    const response = await fetch(`http://127.0.0.1:${control.port}/preview`, {
+      method: "POST", headers: { "content-type": "application/json", "x-alt-token": control.token }, body: JSON.stringify(body),
+    });
+    return { status: response.status, data: (await response.json()) as any };
+  };
+
+  const shot = await call({ from: "Coder", url: "localhost:5173/login" });
+  assert.equal(shot.status, 200);
+  assert.equal(shot.data.title, "Login");
+  assert.deepEqual(asked[0], { address: "http://localhost:5173/login", device: DEFAULT_PREVIEW_DEVICE, landscape: false, from: "Coder" });
+  assert.equal((await call({ from: "Coder", url: "http://192.168.1.4:3000", device: "ipad-mini", landscape: true })).status, 200);
+  assert.deepEqual(asked[1], { address: "http://192.168.1.4:3000/", device: "ipad-mini", landscape: true, from: "Coder" });
+
+  const remote = await call({ from: "Coder", url: "https://mail.google.com/" });
+  assert.equal(remote.status, 403, "pages on the internet are refused: the previews keep sign-ins");
+  assert.match(remote.data.error, /local network/);
+  assert.equal((await call({ from: "Coder", url: "file:///C:/secret.txt" })).status, 400);
+  const unknown = await call({ from: "Coder", url: "localhost:3000", device: "nokia-3310" });
+  assert.equal(unknown.status, 400);
+  assert.match(unknown.data.error, /iphone-15/, "the error lists the devices there are");
+  assert.equal((await call({ from: "Free models", url: "localhost:3000" })).status, 403, "a contained terminal opens no previews");
+  assert.equal(asked.length, 2, "nothing refused reached the app");
+
+  const failed = await call({ from: "Coder", url: "localhost:9/down" });
+  assert.equal(failed.status, 502);
+  assert.match(failed.data.error, /dev server running/);
+
+  const slow = call({ from: "Coder", url: "localhost:3000/slow" });
+  while (asked.length < 4) await new Promise((r) => setTimeout(r, 10));
+  assert.equal((await call({ from: "Coder", url: "localhost:3000" })).status, 429, "one preview at a time per terminal");
+  release();
+  assert.equal((await slow).status, 200);
+  assert.equal((await call({ from: "Coder", url: "localhost:3000" })).status, 200, "the next one is fine once it finished");
+
+  // Through the MCP server: a text part with the title and errors, and the screenshot as an image.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "alt-preview-"));
+  const controlFile = path.join(dir, "control.json");
+  control.writeAddress(controlFile);
+  const server = spawn(process.execPath, [path.join(__dirname, "..", "mcp", "server.js")], {
+    cwd: dir, env: { ...process.env, ALT_HOME: path.join(dir, "home"), ALT_CLAUDE_HOME: path.join(dir, "claude"), ALT_PROFILE: "Coder", ALT_CONTROL: controlFile },
+  });
+  t.after(() => server.kill());
+  let buffer = "";
+  const replies: any[] = [];
+  server.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    const lines = buffer.split("\n");
+    buffer = lines.pop()!;
+    replies.push(...lines.filter(Boolean).map((l) => JSON.parse(l)));
+  });
+  const ask = async (id: number, method: string, params: object) => {
+    server.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    for (let i = 0; i < 500 && !replies.some((r) => r.id === id); i++) await new Promise((r) => setTimeout(r, 30));
+    return replies.find((r) => r.id === id).result;
+  };
+  const tools = await ask(1, "tools/list", {});
+  const tool = tools.tools.find((x: any) => x.name === "preview_device");
+  assert.ok(tool.inputSchema.properties.device.enum.includes("pixel-8"));
+  const result = await ask(2, "tools/call", { name: "preview_device", arguments: { url: "http://localhost:5173/login", device: "pixel-8" } });
+  assert.equal(result.isError, undefined);
+  assert.match(result.content[0].text, /Title: Login/);
+  assert.match(result.content[0].text, /Uncaught TypeError/);
+  assert.deepEqual(result.content[1], { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" });
+  const refused = await ask(3, "tools/call", { name: "preview_device", arguments: { url: "https://example.com" } });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /local network/);
 });

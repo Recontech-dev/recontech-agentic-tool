@@ -1,7 +1,7 @@
 name: Release
 
 # Pushing a tag such as v0.3.0 runs the tests, builds the Windows installer and attaches it to a GitHub release.
-# The tag must match the version in package.json.
+# The tag must match the version in package.json; the first step stops the release when it does not.
 on:
   push:
     tags: ["v*"]
@@ -9,16 +9,32 @@ on:
 permissions:
   contents: write
 
+# Two pushes of the same tag must never publish at the same time.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+      - name: Check the tag matches package.json
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "${{ github.ref_name }}" != "v$version" ]; then
+            echo "::error::The tag ${{ github.ref_name }} does not match package.json version $version. Tag v$version instead."
+            exit 1
+          fi
       - run: npm ci
       - run: npm test
+      - run: node scripts/check-secrets.mjs --all
       - run: npm run dist
       - name: Publish release
         env:

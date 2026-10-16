@@ -156,8 +156,23 @@
   #usageBudget { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; padding:0 8px 8px; font-size:11.5px; color:var(--dim); }
   #usageBudget label { display:flex; gap:5px; align-items:center; }
   #usageBudget input { width:72px; padding:2px 6px; font-size:11.5px; }
-  .xterm-viewport::-webkit-scrollbar { width:8px; background:transparent; }
-  .xterm-viewport::-webkit-scrollbar-thumb { background:#2f3845; border-radius:4px; }
+  .xterm-viewport::-webkit-scrollbar { width:10px; background:transparent; }
+  .xterm-viewport::-webkit-scrollbar-thumb { background:#2f3845; border-radius:5px; }
+  .xterm-viewport::-webkit-scrollbar-thumb:hover { background:#46546a; }
+  .to-latest { position:absolute; right:18px; bottom:10px; z-index:4; padding:3px 10px; font-size:12px; border-color:var(--accent); background:#12161c; opacity:.92; }
+  .to-latest[hidden] { display:none; }
+  .term-search { position:absolute; top:6px; right:18px; z-index:6; display:flex; gap:4px; align-items:center; padding:4px 6px;
+                 background:var(--panel); border:1px solid var(--line); border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,.45); }
+  .term-search[hidden] { display:none; }
+  .term-search input { width:180px; padding:2px 6px; font-size:12px; }
+  .term-search .count { min-width:64px; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .term-search button { padding:1px 6px; font-size:12px; }
+  .term-search button[aria-pressed="true"] { border-color:var(--accent); color:var(--text); }
+  @container (max-width:320px) {
+    .term-search { right:8px; }
+    .term-search input { width:100px; }
+    .term-search .count { min-width:0; }
+  }
   /* A quarter of the width until the user drags the divider: on a first run the graph is still empty. */
   #brain { flex:1; min-width:240px; max-width:460px; display:flex; flex-direction:column; border-left:1px solid var(--line); }
   /* In a very short window the parts below still fit by scrolling the column, never by cutting them off. */
@@ -360,6 +375,14 @@
   }
   #shareDialog { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:20; }
   #shareDialog[hidden] { display:none; }
+  #deviceDialog { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:20; }
+  #deviceDialog[hidden] { display:none; }
+  #deviceDialog > form { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; width:min(560px, calc(100% - 32px)); display:flex; flex-direction:column; gap:10px; }
+  #deviceList { display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:6px 12px; }
+  #deviceList label, #deviceDialog .opts label { display:flex; gap:6px; align-items:center; }
+  #deviceList .size { color:var(--dim); font-size:11px; font-variant-numeric:tabular-nums; }
+  #deviceDialog .opts { display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
+  #deviceError { color:#ff7b7b; min-height:1em; }
   #shareDialog > div { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; width:min(520px, calc(100% - 32px)); display:flex; flex-direction:column; gap:10px; }
   #found { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#1f2a3a; border-bottom:1px solid var(--line); }
   #found[hidden] { display:none; }
@@ -418,6 +441,7 @@
     <button id="layout">Tabs</button>
     <button id="toggle">Hide brain</button>
   </div>
+  <button id="devices" title="See the page you are building as a phone, a tablet or a desktop shows it, each in its own window">📱 Devices</button>
   <button id="voiceToggle" title="Recon, the local voice assistant. It is off, and the microphone closed, until you click here. While this is lit, say &quot;Recon&quot; and talk: what you say goes to your Manager terminal and its answers are read out, until you say &quot;that&apos;s all&quot;. Say &quot;turn off the mic&quot; or click here to switch it off; the choice is remembered.">🎙 Recon</button>
   <span class="divider"></span>
   <!-- Adding terminals: the main action of the bar. -->
@@ -575,6 +599,22 @@
     </div>
   </div>
 </div>
+<div id="deviceDialog" hidden>
+  <form id="deviceForm" role="dialog" aria-modal="true" aria-labelledby="deviceTitle">
+    <strong id="deviceTitle">Preview on devices</strong>
+    <div class="dim">Opens the address in one window per device, with that device's screen size, pixel density, touch and browser. Start your dev server first. In a preview window: F5 reloads, Ctrl+Shift+L rotates, F12 opens the developer tools.</div>
+    <input id="deviceUrl" placeholder="Address, for example localhost:3000" spellcheck="false" maxlength="2048">
+    <div id="deviceList"></div>
+    <div class="opts">
+      <label><input type="checkbox" id="deviceLandscape"> Landscape</label>
+      <button type="button" id="devicePhones">Phones</button>
+      <button type="button" id="deviceTablets">Tablets</button>
+      <button type="button" id="deviceNone">None</button>
+    </div>
+    <div id="deviceError"></div>
+    <div class="row" style="display:flex; gap:8px; justify-content:flex-end"><button type="button" id="deviceCancel">Cancel</button><button type="submit">Open previews</button></div>
+  </form>
+</div>
 <div id="roleDialog" hidden>
   <div role="dialog" aria-modal="true" aria-labelledby="roleTitle">
     <strong id="roleTitle">Terminal roles</strong>
@@ -620,6 +660,7 @@
 <div id="toast" role="status" aria-live="polite" hidden></div>
 <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
 <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+<script src="../node_modules/@xterm/addon-search/lib/addon-search.js"></script>
 <div id="dropHint" hidden></div>
 <div id="dragGhost" hidden></div>
 <script src="../dist/renderer/split.js"></script>

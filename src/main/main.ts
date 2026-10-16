@@ -1,6 +1,6 @@
 // The Electron main process: one window with a terminal per Claude Code profile and the brain beside them.
 
-import { app, BrowserWindow, crashReporter, dialog, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, crashReporter, dialog, ipcMain, Menu, screen as displays, session, shell } from "electron";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -25,8 +25,9 @@ import { planLimits } from "../brain/limits";
 import { moveTask, readTasks } from "../brain/tasks";
 import { tokenUsage } from "../brain/usage";
 import * as ws from "../brain/workspace";
-import { Control } from "./control";
+import { Control, PreviewRequest, PreviewShot } from "./control";
 import { Delivery } from "./delivery";
+import { DEVICES, Device, deviceById, fitScale, oriented, previewAddress } from "../brain/devices";
 import { VOICE_REPLY_MS, VoiceReplies } from "./voice";
 import { FreeModels } from "./free";
 import { makePrivate } from "./privacy";
@@ -131,6 +132,7 @@ const control = new Control({
     return win.webContents.executeJavaScript(`terminalText(${JSON.stringify(profile.id)}, ${Number(lines) || 60})`);
   },
   contained: (name) => ws.isContained(workspace, workspace.profiles.find((p) => p.name === name)),
+  preview: (request) => previewShot(request),
   deliver: (name, text, from) => {
     const profile = workspace.profiles.find((p) => p.name === name);
     if (!profile || !terminals.has(profile.id)) return "sent";
@@ -527,8 +529,207 @@ function createWindow(): void {
     }
   });
   win.loadFile(path.join(__dirname, "..", "..", "static", "index.html"));
-  win.on("closed", () => (win = null));
+  win.on("closed", () => {
+    win = null;
+    // A preview left open would keep the app running with no main window.
+    for (const view of previews) if (!view.isDestroyed()) view.close();
+  });
 }
+
+/* ---------- Device previews: the page being built, as a phone, a tablet or a desktop shows it ---------- */
+
+const PREVIEW_PARTITION = "persist:device-preview";
+const previews = new Set<BrowserWindow>();
+let previewSessionReady = false;
+
+/** The previews' own session: sign-ins there stay apart from the app's, and a page under test gets no permissions. */
+function previewSession(): Electron.Session {
+  const own = session.fromPartition(PREVIEW_PARTITION);
+  if (!previewSessionReady) {
+    previewSessionReady = true;
+    // Electron grants permission requests that nothing answers; a page under test gets no camera, microphone or location.
+    own.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    own.setPermissionCheckHandler(() => false);
+  }
+  return own;
+}
+
+function webAddress(url: string): boolean {
+  try {
+    return /^https?:$/.test(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
+
+/** The work area of the screen the main window is on. */
+function workArea(): Electron.Rectangle {
+  return displays.getDisplayMatching(win && !win.isDestroyed() ? win.getBounds() : { x: 0, y: 0, width: 1, height: 1 }).workArea;
+}
+
+/**
+ * Opens one preview window for `device`, its top-left corner at `at`, showing `address`. One opened for a
+ * terminal's Claude Code (`by` names it) comes up without taking the focus from what the user is typing.
+ */
+function openPreview(device: Device, address: string, landscape: boolean, at: { x: number; y: number }, by?: string): BrowserWindow {
+  const room = workArea();
+  const view = new BrowserWindow({
+    useContentSize: true, width: 400, height: 800, x: at.x, y: at.y, resizable: false, maximizable: false, fullscreenable: false,
+    backgroundColor: "#ffffff", title: device.name, show: !by,
+    webPreferences: { session: previewSession(), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, devTools: true },
+  });
+  previews.add(view);
+  view.on("closed", () => previews.delete(view));
+  const contents = view.webContents;
+  if (device.userAgent) contents.setUserAgent(device.userAgent);
+  let sideways = landscape;
+  let pageTitle = "";
+  const showTitle = () => {
+    const { width, height } = oriented(device, sideways);
+    view.setTitle(`${device.name} · ${width}×${height}${pageTitle ? ` — ${pageTitle}` : ""}${by ? ` · opened by ${by}` : ""}`);
+  };
+  // The device's screen size, pixel density, touch and orientation, the way Chrome's device mode sets them.
+  const emulate = async () => {
+    const { width, height } = oriented(device, sideways);
+    const zoom = fitScale(width, height, room);
+    view.setContentSize(Math.round(width * zoom), Math.round(height * zoom));
+    showTitle();
+    try {
+      if (!contents.debugger.isAttached()) contents.debugger.attach("1.3");
+      await contents.debugger.sendCommand("Emulation.setDeviceMetricsOverride", {
+        width, height, deviceScaleFactor: device.scale, mobile: device.mobile, scale: zoom, screenWidth: width, screenHeight: height,
+        screenOrientation: { type: sideways ? "landscapePrimary" : "portraitPrimary", angle: sideways ? 90 : 0 },
+      });
+      await contents.debugger.sendCommand("Emulation.setTouchEmulationEnabled", { enabled: device.mobile, maxTouchPoints: device.mobile ? 5 : 1 });
+      await contents.debugger.sendCommand("Emulation.setEmitTouchEventsForMouse", { enabled: device.mobile, configuration: device.mobile ? "mobile" : "desktop" });
+    } catch (error) {
+      console.error(`[preview] could not emulate ${device.name}: ${(error as Error).message}`);
+    }
+  };
+  const history = contents.navigationHistory;
+  view.setMenu(Menu.buildFromTemplate([
+    { label: "Reload", accelerator: "F5", click: () => (contents.getURL().startsWith("data:") ? void contents.loadURL(address) : contents.reload()) },
+    { label: "Reload without cache", accelerator: "CmdOrCtrl+Shift+R", click: () => contents.reloadIgnoringCache() },
+    { label: "Back", accelerator: "Alt+Left", click: () => history.canGoBack() && history.goBack() },
+    { label: "Forward", accelerator: "Alt+Right", click: () => history.canGoForward() && history.goForward() },
+    { label: "Rotate", accelerator: "CmdOrCtrl+Shift+L", enabled: device.mobile, click: () => { sideways = !sideways; void emulate(); } },
+    { label: "Open in browser", click: () => { const url = contents.getURL(); if (webAddress(url)) void shell.openExternal(url); } },
+    { label: "Developer tools", accelerator: "F12", click: () => contents.openDevTools({ mode: "detach" }) },
+  ]));
+  // Only web pages: a preview never opens a file on this computer or hands a link to another program.
+  contents.on("will-navigate", (event, url) => { if (!webAddress(url)) event.preventDefault(); });
+  contents.on("will-redirect", (event, url) => { if (!webAddress(url)) event.preventDefault(); });
+  contents.on("will-attach-webview", (event) => event.preventDefault());
+  // A link that would open a new window opens in this one, still as the device.
+  contents.setWindowOpenHandler(({ url }) => {
+    if (webAddress(url)) void contents.loadURL(url);
+    return { action: "deny" };
+  });
+  view.on("page-title-updated", (event, title) => {
+    event.preventDefault();
+    pageTitle = title;
+    showTitle();
+  });
+  contents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
+    // -3 is a load replaced by another one, not a failure.
+    if (!isMainFrame || code === -3) return;
+    const text = (t: string) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+    const page = `<meta charset="utf-8"><body style="font:15px system-ui;padding:24px;color:#222"><h3>Could not open the page</h3>` +
+      `<p>${text(url)}</p><p style="color:#666">${text(description)}. Is the dev server running? Press F5 to try again.</p></body>`;
+    void contents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(page)}`);
+  });
+  void emulate().then(() => contents.loadURL(address)).catch(() => undefined);
+  if (by) view.showInactive();
+  return view;
+}
+
+/** How long a preview for Claude Code may take to load, and how long the page then gets to settle. */
+const PREVIEW_LOAD_MS = 30_000;
+const PREVIEW_SETTLE_MS = 1_200;
+/** Screenshots wider or taller than this are scaled down: plenty to judge a layout by, and far smaller to send. */
+const PREVIEW_MAX_PX = 1600;
+/** The window each device last opened for Claude Code: the next preview on that device replaces it. */
+const agentPreviews = new Map<string, BrowserWindow>();
+
+/** Opens a preview for a terminal's Claude Code, waits for the page, and returns a screenshot of it. */
+async function previewShot(request: PreviewRequest): Promise<PreviewShot | { error: string }> {
+  const device = deviceById(request.device);
+  if (!device) return { error: `There is no device "${request.device}".` };
+  const old = agentPreviews.get(device.id);
+  if (old && !old.isDestroyed()) old.close();
+  const area = workArea();
+  const view = openPreview(device, request.address, request.landscape, { x: area.x + 16, y: area.y + 16 }, request.from || "Claude Code");
+  agentPreviews.set(device.id, view);
+  view.on("closed", () => {
+    if (agentPreviews.get(device.id) === view) agentPreviews.delete(device.id);
+  });
+  const contents = view.webContents;
+  const errors: string[] = [];
+  contents.on("console-message", (details) => {
+    if (details.level === "error" && errors.length < 20) errors.push(String(details.message).slice(0, 500));
+  });
+  const problem = await new Promise<string | null>((resolve) => {
+    const finish = (outcome: string | null) => {
+      clearTimeout(timer);
+      contents.off("did-finish-load", loaded);
+      contents.off("did-fail-load", failed);
+      view.off("closed", closed);
+      resolve(outcome);
+    };
+    const timer = setTimeout(() => finish(`The page did not finish loading within ${PREVIEW_LOAD_MS / 1000} seconds.`), PREVIEW_LOAD_MS);
+    // The error page a failed load is replaced by also "finishes loading"; only the real page counts.
+    const loaded = () => {
+      if (!contents.getURL().startsWith("data:")) finish(null);
+    };
+    const failed = (_event: Electron.Event, code: number, description: string, url: string, isMainFrame: boolean) => {
+      if (isMainFrame && code !== -3) finish(`Could not open ${url}: ${description}. Is the dev server running?`);
+    };
+    const closed = () => finish("The preview window was closed before the page loaded.");
+    contents.on("did-finish-load", loaded);
+    contents.on("did-fail-load", failed);
+    view.on("closed", closed);
+  });
+  if (problem) return { error: problem };
+  await new Promise((resolve) => setTimeout(resolve, PREVIEW_SETTLE_MS));
+  if (view.isDestroyed()) return { error: "The preview window was closed before the screenshot was taken." };
+  let image = await contents.capturePage();
+  if (image.isEmpty()) return { error: "The screenshot came out empty. Try again." };
+  const size = image.getSize();
+  const shrink = Math.min(1, PREVIEW_MAX_PX / Math.max(size.width, size.height));
+  if (shrink < 1) image = image.resize({ width: Math.round(size.width * shrink), height: Math.round(size.height * shrink), quality: "best" });
+  const { width, height } = oriented(device, request.landscape);
+  return {
+    image: image.toPNG().toString("base64"),
+    title: contents.getTitle(),
+    url: contents.getURL(),
+    device: `${device.name} (${width}×${height}${device.mobile ? (request.landscape ? ", landscape" : ", portrait") : ""})`,
+    errors,
+  };
+}
+
+ipcMain.handle("device:list", () => DEVICES.map(({ id, name, width, height, mobile }) => ({ id, name, width, height, mobile })));
+ipcMain.handle("device:open", (_event, input: unknown, ids: unknown, landscape: unknown) => {
+  const address = previewAddress(input);
+  if (!address) return { error: "Type a web address, for example localhost:3000." };
+  const chosen = (Array.isArray(ids) ? ids : []).map(deviceById).filter((d): d is Device => !!d);
+  const unique = [...new Map(chosen.map((d) => [d.id, d])).values()];
+  if (!unique.length) return { error: "Choose at least one device." };
+  // Side by side from the left of the screen the main window is on; a row that is full starts again, a little lower.
+  const area = workArea();
+  let x = area.x + 16;
+  let y = area.y + 16;
+  for (const device of unique) {
+    const view = openPreview(device, address, landscape === true, { x, y });
+    const { width } = view.getBounds();
+    x += width + 12;
+    if (x + width > area.x + area.width) {
+      x = area.x + 16;
+      y += 40;
+    }
+  }
+  return { address, opened: unique.length };
+});
+
 
 /** If the workspace file was unreadable and reset at startup, tell the user where the old one went. */
 function showRecoveryNotice(): void {
