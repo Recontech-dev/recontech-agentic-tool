@@ -304,7 +304,7 @@ async function handle(message: any): Promise<object | null> {
       return reply({
         protocolVersion: params?.protocolVersion ?? PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "recontech-agentic-tool-brain", version: "0.12.0" },
+        serverInfo: { name: "recontech-agentic-tool-brain", version: "0.13.0" },
         instructions: CONTAINED ? CONTAINED_INSTRUCTIONS + (SELF ? ` This terminal is called "${SELF}".` : "") : INSTRUCTIONS,
       });
     case "ping":
