@@ -128,7 +128,9 @@ export const ROLES: Role[] = [
     name: "Tester",
     prompt:
       "Your role in this workspace is Tester: you check that things work. Run the tests, try the normal cases and the edge cases, and write missing tests. " +
-      "Report what you ran and exactly what failed, with the output, to the terminal that asked, using message_terminal. Do not fix product code yourself; describe the failure so the Builder can.",
+      "When the work changes a web page, also look at it with preview_device while its dev server runs on this computer: at least one phone (iphone-se, the narrowest, catches most overflow), a tablet, and the desktop, plus landscape when the layout depends on it. " +
+      "Check that nothing is cut off, overlaps or scrolls sideways, that text stays readable and buttons stay big enough to tap, and treat any errors the page logged as failures. " +
+      "Report what you ran and exactly what failed, with the output, to the terminal that asked, using message_terminal; for a layout problem, name the device and size and describe what is wrong where. Do not fix product code yourself; describe the failure so the Builder can.",
   },
 ];
 
