@@ -34,7 +34,12 @@ export const KITS: Kit[] = [
     prompt:
       "This is a Unity game project. Scripts are C# under Assets; check ProjectSettings/ProjectVersion.txt for the Unity version and Packages/manifest.json for packages before using an API. " +
       "Never hand-edit .unity, .prefab, .asset or .meta files; describe the change to make in the Editor instead, or write an Editor script that makes it. " +
-      "Keep work out of Update when it can be event-driven, avoid allocations in per-frame code, and name the GameObject or component a script belongs on. " +
+      "Keep work out of Update when it can be event-driven, avoid allocations in per-frame code (no Find, FindFirstObjectByType, GetComponent, LINQ or string building every frame: cache or throttle them), and name the GameObject or component a script belongs on. " +
+      "A destroyed UnityEngine.Object only equals null through ==, so never use ??, ??=, ?. or is null on Unity objects; use == null or TryGetComponent. " +
+      "Materials, meshes, textures and audio clips made at runtime (new Material, renderer.material, meshFilter.mesh, procedural meshes and clips) are not freed with their GameObject or scene: destroy them in OnDestroy, and never destroy a shared or saved asset. " +
+      "When Enter Play Mode skips domain reload, statics and static events survive between plays: reset them with RuntimeInitializeOnLoadMethod and SubsystemRegistration, and unsubscribe whatever you subscribe. " +
+      "For multiplayer, set up networked state in OnNetworkSpawn and undo it in OnNetworkDespawn, keep state a late joiner needs in synced variables rather than one-off RPCs, and keep shared randomness seeded and independent of what one peer happens to have loaded. " +
+      "Never recompile, enter play mode or drive the Editor while the user is working in it. " +
       "For errors, ask for the Console message with its stack trace. After a change, say what to do in the Editor to test it.",
   },
   {
@@ -61,7 +66,9 @@ export const KITS: Kit[] = [
     prompt:
       "This is Blender-to-engine 3D asset work, scripted and headless. If the project has its own 3D AI brain under Docs (often Docs/AI Artist/3D AI), read its README.md first, then core/HARD_RULES.md and the matching projects file for this game, before touching anything, and look up craft facts by keyword in knowledge/INDEX.md instead of reading it whole. " +
       "Fill an asset brief before modelling: state what each reference image controls (pose, proportions, material or colour) and let the project owner correct it. Use real-world dimensions from cited sources, written into the script header, never eyeballed. Never invent a colour outside the shared palette module. " +
-      "Build shells with extrude, loft, solidify, boolean and bevel, not boxes, and get the real silhouette right before adding detail. Batch bpy.ops calls instead of one call per part, since Blender re-evaluates the whole scene on every call. Pass Blender absolute output paths, since a relative path resolves against the drive root instead of the project folder. " +
+      "Build shells with extrude, loft, solidify, boolean and bevel, not boxes, and get the real silhouette right before adding detail. Sweep curved parts such as horns, tusks, tails and cables as one tube along a smooth spline, since a chain of capsules or spheres bulges at every joint, and give cloth such as laundry, flags and tarps a real cut shape, never a flat box. " +
+      "Prefer bpy.data over bpy.ops, and batch the bpy.ops calls you do need instead of one call per part, since Blender re-evaluates the whole scene on every call. Measure and validate the evaluated geometry (evaluated_depsgraph_get, then evaluated_get) so modifiers are counted. Pass Blender absolute output paths, since a relative path resolves against the drive root instead of the project folder. " +
+      "Before export: transforms applied (careful with rigged or animated objects), meters at scale 1, meaningful object names instead of Cube.001, UVs present, no stray ngons or non-manifold edges, and _LOD0, _LOD1 suffixes when the engine should build LOD groups. Export one asset and check its scale and facing in the engine before a batch. When replacing an asset already in the engine, overwrite the model file in place and keep its .meta or import settings, so references, names and pivots survive. " +
       "Mirror an axis only at export time and then verify orientation in the engine against an asymmetric landmark, since an engine such as Unity can negate an axis on import. A validator pass proves geometry, never beauty, and judging whether an asset looks right, or changing a gameplay size, stays a decision for the project owner: flag it, do not decide it. " +
       "Never drive, recompile or import into a running DCC or game editor that the owner is using. After a change, say which script to run and where the exported file lands.",
   },
