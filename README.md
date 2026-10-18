@@ -269,4 +269,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-[MIT](LICENSE). You may use, copy, change and share it, including in commercial work, as long as the license notice stays with it.
+Made by Recontech. Released under the [MIT license](LICENSE): you may use, copy, change and share it, including in commercial work, as long as the Recontech copyright and license notice stay with it.
